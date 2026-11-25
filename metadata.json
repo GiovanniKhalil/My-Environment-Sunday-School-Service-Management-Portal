@@ -1,0 +1,6 @@
+{
+  "name": "منصة إدارة خدمات مدارس الأحد",
+  "description": "منصة سحابية متعددة الفصول لإدارة خدمات مدارس الأحد القبطية، متابعة المخدومين والخدام، جداول الخدمة والافتقاد، ومركز تواصل أمناء الفصول.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

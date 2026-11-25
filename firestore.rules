@@ -1,0 +1,681 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function isValidId(id) {
+      return id is string && id.size() >= 2 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEnvironmentOwner() {
+      return isSignedIn() && (
+        (
+          request.auth.token.email == 'jovanni.ayman@gmail.com' &&
+          request.auth.token.email_verified == true
+        ) ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function workspaceExists(workspaceId) {
+      return exists(/databases/$(database)/documents/workspaces/$(workspaceId));
+    }
+
+    function isWorkspaceMember(workspaceId) {
+      return isSignedIn() && exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
+    }
+
+    function memberRole(workspaceId) {
+      return get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data.role;
+    }
+
+    function isWorkspaceAdmin(workspaceId) {
+      return isEnvironmentOwner() || (
+        isWorkspaceMember(workspaceId) &&
+        memberRole(workspaceId) in ['head_servant', 'assistant_head']
+      );
+    }
+
+    function isWorkspaceServantOrAbove(workspaceId) {
+      return isEnvironmentOwner() || (
+        isWorkspaceMember(workspaceId) &&
+        memberRole(workspaceId) in ['head_servant', 'assistant_head', 'servant']
+      );
+    }
+
+    // --- Entity Validation Blueprints ---
+    function isValidWorkspace(data) {
+      return data.keys().hasAll(['id', 'churchName', 'className', 'status', 'ownerUid', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id', 'churchName', 'className', 'stageConfig', 'grades', 'logoUrl',
+          'verse', 'status', 'headServantId', 'headServantName', 'ownerUid',
+          'studentCount', 'servantCount', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.churchName is string && data.churchName.size() >= 2 && data.churchName.size() <= 120 &&
+        data.className is string && data.className.size() >= 2 && data.className.size() <= 120 &&
+        data.status in ['active', 'suspended'] &&
+        data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        (!('stageConfig' in data) || (data.stageConfig is string && data.stageConfig.size() <= 200)) &&
+        (!('grades' in data) || (data.grades is list && data.grades.size() <= 15 && (data.grades.size() == 0 || data.grades[0] is string))) &&
+        (!('logoUrl' in data) || (data.logoUrl is string && data.logoUrl.size() <= 250000)) &&
+        (!('verse' in data) || (data.verse is string && data.verse.size() <= 300)) &&
+        (!('headServantId' in data) || (data.headServantId is string && data.headServantId.size() <= 128)) &&
+        (!('headServantName' in data) || (data.headServantName is string && data.headServantName.size() <= 120)) &&
+        (!('studentCount' in data) || (data.studentCount is number && data.studentCount >= 0)) &&
+        (!('servantCount' in data) || (data.servantCount is number && data.servantCount >= 0)) &&
+        (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
+    }
+
+    function isValidMember(data, workspaceId) {
+      return data.keys().hasAll(['uid', 'workspaceId', 'role', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'workspaceId', 'role', 'linkedProfileId', 'createdAt']) &&
+        isValidId(data.uid) &&
+        data.workspaceId == workspaceId &&
+        data.role in ['head_servant', 'assistant_head', 'servant', 'student'] &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        (!('linkedProfileId' in data) || (data.linkedProfileId is string && data.linkedProfileId.size() <= 128));
+    }
+
+    function isValidGlobalUser(data) {
+      return data.keys().hasAll(['id', 'username', 'role', 'fullName', 'status', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id', 'username', 'role', 'workspaceId', 'fullName', 'status',
+          'ownerUid', 'approvedWorkspaceId', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.username is string && data.username.size() >= 2 && data.username.size() <= 64 &&
+        data.role in ['environment_owner', 'applicant', 'head_servant', 'assistant_head', 'servant', 'student'] &&
+        data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 120 &&
+        data.status in ['active', 'pending', 'approved', 'rejected', 'suspended'] &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        (!('workspaceId' in data) || (data.workspaceId is string && data.workspaceId.size() <= 128)) &&
+        (!('ownerUid' in data) || (data.ownerUid is string && data.ownerUid.size() <= 128)) &&
+        (!('approvedWorkspaceId' in data) || (data.approvedWorkspaceId is string && data.approvedWorkspaceId.size() <= 128)) &&
+        (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
+    }
+
+    function isValidGlobalUserPrivate(data, userId) {
+      return data.keys().hasAll(['userId']) &&
+        data.keys().hasOnly([
+          'userId', 'phone', 'email', 'passwordHash', 'salt',
+          'proposedChurchName', 'proposedClassName', 'proposedStageConfig',
+          'serviceVision', 'mustChangePassword', 'linkedProfileId'
+        ]) &&
+        data.userId == userId &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 32)) &&
+        (!('email' in data) || (data.email is string && data.email.size() <= 160)) &&
+        (!('passwordHash' in data) || (data.passwordHash is string && data.passwordHash.size() <= 128)) &&
+        (!('salt' in data) || (data.salt is string && data.salt.size() <= 64)) &&
+        (!('proposedChurchName' in data) || (data.proposedChurchName is string && data.proposedChurchName.size() <= 120)) &&
+        (!('proposedClassName' in data) || (data.proposedClassName is string && data.proposedClassName.size() <= 120)) &&
+        (!('proposedStageConfig' in data) || (data.proposedStageConfig is string && data.proposedStageConfig.size() <= 200)) &&
+        (!('serviceVision' in data) || (data.serviceVision is string && data.serviceVision.size() <= 1500)) &&
+        (!('mustChangePassword' in data) || (data.mustChangePassword is bool)) &&
+        (!('linkedProfileId' in data) || (data.linkedProfileId is string && data.linkedProfileId.size() <= 128));
+    }
+
+    function isValidChatChannel(data) {
+      return data.keys().hasAll(['id', 'type', 'title']) &&
+        data.keys().hasOnly([
+          'id', 'type', 'title', 'participantUid', 'participantUserId',
+          'participantName', 'participantRole', 'workspaceId',
+          'churchName', 'className', 'lastMessage', 'lastMessageAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.type in ['group', 'direct'] &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
+        (!('participantUid' in data) || (data.participantUid is string && data.participantUid.size() <= 128)) &&
+        (!('participantUserId' in data) || (data.participantUserId is string && data.participantUserId.size() <= 128)) &&
+        (!('participantName' in data) || (data.participantName is string && data.participantName.size() <= 120)) &&
+        (!('participantRole' in data) || (data.participantRole is string && data.participantRole.size() <= 40)) &&
+        (!('workspaceId' in data) || (data.workspaceId is string && data.workspaceId.size() <= 128)) &&
+        (!('churchName' in data) || (data.churchName is string && data.churchName.size() <= 120)) &&
+        (!('className' in data) || (data.className is string && data.className.size() <= 120)) &&
+        (!('lastMessage' in data) || (data.lastMessage is string && data.lastMessage.size() <= 500)) &&
+        (!('lastMessageAt' in data) || (data.lastMessageAt is string && data.lastMessageAt.size() <= 64));
+    }
+
+    function isValidChatMessage(data, channelId) {
+      return data.keys().hasAll(['id', 'channelId', 'senderUid', 'senderName', 'text', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id', 'channelId', 'senderUid', 'senderId', 'senderName',
+          'senderRole', 'senderWorkspaceName', 'text', 'createdAt', 'isSystem'
+        ]) &&
+        isValidId(data.id) &&
+        data.channelId == channelId &&
+        data.senderUid == request.auth.uid &&
+        data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 120 &&
+        data.text is string && data.text.size() >= 1 && data.text.size() <= 2000 &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        (!('senderId' in data) || (data.senderId is string && data.senderId.size() <= 128)) &&
+        (!('senderRole' in data) || (data.senderRole is string && data.senderRole.size() <= 40)) &&
+        (!('senderWorkspaceName' in data) || (data.senderWorkspaceName is string && data.senderWorkspaceName.size() <= 140)) &&
+        (!('isSystem' in data) || (data.isSystem is bool));
+    }
+
+    function isValidStudent(data, workspaceId) {
+      return data.keys().hasAll(['id', 'workspaceId', 'fullName', 'grade', 'points', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id', 'workspaceId', 'fullName', 'grade', 'gender', 'birthDate',
+          'phone', 'parentPhone', 'address', 'avatarUrl', 'points', 'badges',
+          'evaluations', 'attendanceHistory', 'pointsHistory', 'username',
+          'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.workspaceId == workspaceId &&
+        data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 120 &&
+        data.grade is string && data.grade.size() >= 1 && data.grade.size() <= 80 &&
+        data.points is number &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        (!('gender' in data) || data.gender in ['ذكر', 'أنثى']) &&
+        (!('birthDate' in data) || (data.birthDate is string && data.birthDate.size() <= 20)) &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 32)) &&
+        (!('parentPhone' in data) || (data.parentPhone is string && data.parentPhone.size() <= 32)) &&
+        (!('address' in data) || (data.address is string && data.address.size() <= 240)) &&
+        (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 250000)) &&
+        (!('badges' in data) || (data.badges is list && data.badges.size() <= 20 && (data.badges.size() == 0 || data.badges[0] is string))) &&
+        (!('evaluations' in data) || data.evaluations is map) &&
+        (!('attendanceHistory' in data) || (data.attendanceHistory is list && data.attendanceHistory.size() <= 200)) &&
+        (!('pointsHistory' in data) || (data.pointsHistory is list && data.pointsHistory.size() <= 200)) &&
+        (!('username' in data) || (data.username is string && data.username.size() <= 64)) &&
+        (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
+    }
+
+    function isValidServant(data, workspaceId) {
+      return data.keys().hasAll(['id', 'workspaceId', 'fullName', 'role', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id', 'workspaceId', 'fullName', 'role', 'phone', 'assignedGrade',
+          'gender', 'avatarUrl', 'username', 'bio', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.workspaceId == workspaceId &&
+        data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 120 &&
+        data.role in ['head_servant', 'assistant_head', 'servant'] &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 32)) &&
+        (!('assignedGrade' in data) || (data.assignedGrade is string && data.assignedGrade.size() <= 80)) &&
+        (!('gender' in data) || data.gender in ['ذكر', 'أنثى']) &&
+        (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 250000)) &&
+        (!('username' in data) || (data.username is string && data.username.size() <= 64)) &&
+        (!('bio' in data) || (data.bio is string && data.bio.size() <= 500)) &&
+        (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
+    }
+
+    function isValidMonthlySchedule(data, workspaceId) {
+      return data.keys().hasAll(['id', 'workspaceId', 'date', 'grade', 'lessonTitle', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id', 'workspaceId', 'date', 'grade', 'lessonTitle', 'memoryVerse',
+          'primaryTeacherId', 'primaryTeacherName', 'backupTeacherId',
+          'backupTeacherName', 'segments', 'notes', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.workspaceId == workspaceId &&
+        data.date is string && data.date.size() <= 20 &&
+        data.grade is string && data.grade.size() <= 80 &&
+        data.lessonTitle is string && data.lessonTitle.size() <= 200 &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        (!('memoryVerse' in data) || (data.memoryVerse is string && data.memoryVerse.size() <= 300)) &&
+        (!('primaryTeacherId' in data) || (data.primaryTeacherId is string && data.primaryTeacherId.size() <= 128)) &&
+        (!('primaryTeacherName' in data) || (data.primaryTeacherName is string && data.primaryTeacherName.size() <= 120)) &&
+        (!('backupTeacherId' in data) || (data.backupTeacherId is string && data.backupTeacherId.size() <= 128)) &&
+        (!('backupTeacherName' in data) || (data.backupTeacherName is string && data.backupTeacherName.size() <= 120)) &&
+        (!('segments' in data) || data.segments is map) &&
+        (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
+        (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
+    }
+
+    function isValidVisitation(data, workspaceId) {
+      return data.keys().hasAll(['id', 'workspaceId', 'studentId', 'servantId', 'status']) &&
+        data.keys().hasOnly([
+          'id', 'workspaceId', 'studentId', 'studentName', 'studentGrade',
+          'studentPhone', 'parentPhone', 'servantId', 'servantName',
+          'status', 'weekLabel', 'notes', 'lastUpdatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.workspaceId == workspaceId &&
+        data.studentId is string && data.studentId.size() <= 128 &&
+        data.servantId is string && data.servantId.size() <= 128 &&
+        data.status in ['pending', 'called', 'visited', 'no_answer', 'special_care'] &&
+        (!('studentName' in data) || (data.studentName is string && data.studentName.size() <= 120)) &&
+        (!('studentGrade' in data) || (data.studentGrade is string && data.studentGrade.size() <= 80)) &&
+        (!('studentPhone' in data) || (data.studentPhone is string && data.studentPhone.size() <= 32)) &&
+        (!('parentPhone' in data) || (data.parentPhone is string && data.parentPhone.size() <= 32)) &&
+        (!('servantName' in data) || (data.servantName is string && data.servantName.size() <= 120)) &&
+        (!('weekLabel' in data) || (data.weekLabel is string && data.weekLabel.size() <= 64)) &&
+        (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
+        (!('lastUpdatedAt' in data) || (data.lastUpdatedAt is string && data.lastUpdatedAt.size() <= 64));
+    }
+
+    function isValidAnnouncement(data, workspaceId) {
+      return data.keys().hasAll(['id', 'workspaceId', 'title', 'body', 'target', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id', 'workspaceId', 'title', 'body', 'target', 'isUrgent',
+          'authorName', 'authorRole', 'createdAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.workspaceId == workspaceId &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+        data.body is string && data.body.size() >= 1 && data.body.size() <= 2000 &&
+        data.target in ['all', 'students_only', 'servants_only'] &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        (!('isUrgent' in data) || data.isUrgent is bool) &&
+        (!('authorName' in data) || (data.authorName is string && data.authorName.size() <= 120)) &&
+        (!('authorRole' in data) || (data.authorRole is string && data.authorRole.size() <= 40));
+    }
+
+    function isValidChangeRequest(data, workspaceId) {
+      return data.keys().hasAll(['id', 'workspaceId', 'studentId', 'field', 'newValue', 'status', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id', 'workspaceId', 'studentId', 'studentName', 'ownerUid',
+          'requestedByUsername', 'field', 'oldValue', 'newValue', 'reason',
+          'status', 'reviewedBy', 'reviewedAt', 'createdAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.workspaceId == workspaceId &&
+        data.studentId is string && data.studentId.size() <= 128 &&
+        data.field is string && data.field.size() <= 64 &&
+        data.newValue is string && data.newValue.size() <= 300 &&
+        data.status in ['pending', 'approved', 'rejected'] &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        (!('studentName' in data) || (data.studentName is string && data.studentName.size() <= 120)) &&
+        (!('ownerUid' in data) || (data.ownerUid is string && data.ownerUid.size() <= 128)) &&
+        (!('requestedByUsername' in data) || (data.requestedByUsername is string && data.requestedByUsername.size() <= 64)) &&
+        (!('oldValue' in data) || (data.oldValue is string && data.oldValue.size() <= 300)) &&
+        (!('reason' in data) || (data.reason is string && data.reason.size() <= 400)) &&
+        (!('reviewedBy' in data) || (data.reviewedBy is string && data.reviewedBy.size() <= 120)) &&
+        (!('reviewedAt' in data) || (data.reviewedAt is string && data.reviewedAt.size() <= 64));
+    }
+
+    function isValidServantLog(data, workspaceId) {
+      return data.keys().hasAll(['id', 'workspaceId', 'servantId', 'action', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'workspaceId', 'servantId', 'servantName', 'action', 'details', 'createdAt']) &&
+        isValidId(data.id) &&
+        data.workspaceId == workspaceId &&
+        data.servantId is string && data.servantId.size() <= 128 &&
+        data.action is string && data.action.size() <= 120 &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        (!('servantName' in data) || (data.servantName is string && data.servantName.size() <= 120)) &&
+        (!('details' in data) || (data.details is string && data.details.size() <= 500));
+    }
+
+    // --- Test Connection Health Check ---
+    match /test/{docId} {
+      allow get: if isSignedIn() && docId == 'connection';
+    }
+
+    // --- Bootstrapped Admins ---
+    match /admins/{uid} {
+      allow get: if isSignedIn() && isValidId(uid) && (request.auth.uid == uid || isEnvironmentOwner());
+      allow write: if false;
+    }
+
+    // --- Global Users & Isolated Private PII ---
+    match /globalUsers/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (
+        request.auth.uid == userId || isEnvironmentOwner()
+      );
+      allow list: if isEnvironmentOwner() || (
+        isSignedIn() && existing().ownerUid == request.auth.uid
+      );
+      allow create: if isSignedIn() && isValidId(userId) && isValidGlobalUser(incoming()) && (
+        isEnvironmentOwner() ||
+        (
+          request.auth.uid == userId &&
+          incoming().ownerUid == request.auth.uid &&
+          incoming().role == 'applicant' &&
+          incoming().status == 'pending'
+        )
+      );
+      allow update: if isSignedIn() && isValidId(userId) && isValidGlobalUser(incoming()) && (
+        isEnvironmentOwner() ||
+        (
+          request.auth.uid == userId &&
+          incoming().role == existing().role &&
+          incoming().status == existing().status &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'updatedAt'])
+        )
+      );
+      allow delete: if isEnvironmentOwner() && isValidId(userId);
+
+      match /private/{docId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(docId) && (
+          request.auth.uid == userId || isEnvironmentOwner()
+        );
+        allow create: if isSignedIn() && isValidId(userId) && isValidId(docId) &&
+          isValidGlobalUserPrivate(incoming(), userId) && (
+            request.auth.uid == userId || isEnvironmentOwner()
+          );
+        allow update: if isSignedIn() && isValidId(userId) && isValidId(docId) &&
+          isValidGlobalUserPrivate(incoming(), userId) && (
+            isEnvironmentOwner() ||
+            (
+              request.auth.uid == userId &&
+              incoming().userId == existing().userId &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'phone', 'passwordHash', 'salt', 'serviceVision', 'mustChangePassword'
+              ])
+            )
+          );
+        allow delete: if isEnvironmentOwner() && isValidId(userId) && isValidId(docId);
+      }
+    }
+
+    // --- Environment Leadership & Onboarding Chat ---
+    match /environmentChat/{channelId} {
+      allow get: if isSignedIn() && isValidId(channelId) && (
+        isEnvironmentOwner() ||
+        channelId == 'global_leaders' ||
+        existing().participantUid == request.auth.uid
+      );
+      allow list: if isEnvironmentOwner() || (
+        isSignedIn() && (
+          existing().type == 'group' ||
+          existing().participantUid == request.auth.uid
+        )
+      );
+      allow create: if isSignedIn() && isValidId(channelId) && isValidChatChannel(incoming()) && (
+        isEnvironmentOwner() ||
+        (incoming().type == 'direct' && incoming().participantUid == request.auth.uid)
+      );
+      allow update: if isSignedIn() && isValidId(channelId) && isValidChatChannel(incoming()) && (
+        isEnvironmentOwner() ||
+        (
+          (existing().type == 'group' || existing().participantUid == request.auth.uid) &&
+          incoming().id == existing().id &&
+          incoming().type == existing().type &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['lastMessage', 'lastMessageAt'])
+        )
+      );
+      allow delete: if isEnvironmentOwner() && isValidId(channelId);
+
+      match /messages/{messageId} {
+        allow get: if isSignedIn() && isValidId(channelId) && isValidId(messageId) && (
+          isEnvironmentOwner() ||
+          channelId == 'global_leaders' ||
+          get(/databases/$(database)/documents/environmentChat/$(channelId)).data.participantUid == request.auth.uid
+        );
+        allow list: if isEnvironmentOwner() || (
+          isSignedIn() && (
+            channelId == 'global_leaders' ||
+            existing().senderUid == request.auth.uid ||
+            get(/databases/$(database)/documents/environmentChat/$(channelId)).data.participantUid == request.auth.uid
+          )
+        );
+        allow create: if isSignedIn() && isValidId(channelId) && isValidId(messageId) &&
+          isValidChatMessage(incoming(), channelId) &&
+          exists(/databases/$(database)/documents/environmentChat/$(channelId)) && (
+            isEnvironmentOwner() ||
+            channelId == 'global_leaders' ||
+            get(/databases/$(database)/documents/environmentChat/$(channelId)).data.participantUid == request.auth.uid
+          );
+        allow update, delete: if isEnvironmentOwner() && isValidId(channelId) && isValidId(messageId);
+      }
+    }
+
+    // --- Multi-Tenant Workspaces (Isolated Rooms/Classes) ---
+    match /workspaces/{workspaceId} {
+      allow get: if isSignedIn() && isValidId(workspaceId) && (
+        isEnvironmentOwner() || isWorkspaceMember(workspaceId)
+      );
+      allow list: if isEnvironmentOwner() || (
+        isSignedIn() && existing().ownerUid == request.auth.uid
+      );
+      allow create: if isEnvironmentOwner() && isValidId(workspaceId) && isValidWorkspace(incoming());
+      allow update: if isSignedIn() && isValidId(workspaceId) && isValidWorkspace(incoming()) && (
+        isEnvironmentOwner() ||
+        (
+          isWorkspaceAdmin(workspaceId) &&
+          incoming().id == existing().id &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().status == existing().status &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'churchName', 'className', 'stageConfig', 'grades', 'logoUrl',
+            'verse', 'studentCount', 'servantCount', 'updatedAt'
+          ])
+        )
+      );
+      allow delete: if isEnvironmentOwner() && isValidId(workspaceId);
+
+      // Workspace Members (Master Gate)
+      match /members/{uid} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(uid) && (
+          isEnvironmentOwner() || request.auth.uid == uid || isWorkspaceAdmin(workspaceId)
+        );
+        allow list: if isEnvironmentOwner() || isWorkspaceAdmin(workspaceId) || (
+          isSignedIn() && existing().workspaceId == workspaceId && existing().uid == request.auth.uid
+        );
+        allow create: if isSignedIn() && isValidId(workspaceId) && isValidId(uid) &&
+          workspaceExists(workspaceId) && isValidMember(incoming(), workspaceId) && (
+            isEnvironmentOwner() || isWorkspaceAdmin(workspaceId)
+          );
+        allow update: if isSignedIn() && isValidId(workspaceId) && isValidId(uid) &&
+          isValidMember(incoming(), workspaceId) && (
+            isEnvironmentOwner() ||
+            (
+              isWorkspaceAdmin(workspaceId) &&
+              incoming().uid == existing().uid &&
+              incoming().workspaceId == existing().workspaceId &&
+              incoming().createdAt == existing().createdAt &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['role', 'linkedProfileId'])
+            )
+          );
+        allow delete: if isSignedIn() && isValidId(workspaceId) && isValidId(uid) && (
+          isEnvironmentOwner() || isWorkspaceAdmin(workspaceId)
+        );
+      }
+
+      // Students Subcollection
+      match /students/{studentId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(studentId) && (
+          isEnvironmentOwner() || isWorkspaceMember(workspaceId)
+        );
+        allow list: if isEnvironmentOwner() || (
+          isSignedIn() && isWorkspaceMember(workspaceId) && existing().workspaceId == workspaceId
+        );
+        allow create: if isSignedIn() && isValidId(workspaceId) && isValidId(studentId) &&
+          workspaceExists(workspaceId) && isValidStudent(incoming(), workspaceId) &&
+          isWorkspaceServantOrAbove(workspaceId);
+        allow update: if isSignedIn() && isValidId(workspaceId) && isValidId(studentId) &&
+          isValidStudent(incoming(), workspaceId) && (
+            isEnvironmentOwner() ||
+            (
+              isWorkspaceServantOrAbove(workspaceId) &&
+              incoming().id == existing().id &&
+              incoming().workspaceId == existing().workspaceId &&
+              incoming().createdAt == existing().createdAt &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'fullName', 'grade', 'gender', 'birthDate', 'phone', 'parentPhone',
+                'address', 'avatarUrl', 'points', 'badges', 'evaluations',
+                'attendanceHistory', 'pointsHistory', 'username', 'updatedAt'
+              ])
+            )
+          );
+        allow delete: if isSignedIn() && isValidId(workspaceId) && isValidId(studentId) && isWorkspaceAdmin(workspaceId);
+      }
+
+      // Servants Subcollection
+      match /servants/{servantId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(servantId) && (
+          isEnvironmentOwner() || isWorkspaceMember(workspaceId)
+        );
+        allow list: if isEnvironmentOwner() || (
+          isSignedIn() && isWorkspaceMember(workspaceId) && existing().workspaceId == workspaceId
+        );
+        allow create: if isSignedIn() && isValidId(workspaceId) && isValidId(servantId) &&
+          workspaceExists(workspaceId) && isValidServant(incoming(), workspaceId) &&
+          isWorkspaceAdmin(workspaceId);
+        allow update: if isSignedIn() && isValidId(workspaceId) && isValidId(servantId) &&
+          isValidServant(incoming(), workspaceId) && (
+            isEnvironmentOwner() ||
+            (
+              isWorkspaceAdmin(workspaceId) &&
+              incoming().id == existing().id &&
+              incoming().workspaceId == existing().workspaceId &&
+              incoming().createdAt == existing().createdAt &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'fullName', 'role', 'phone', 'assignedGrade', 'gender',
+                'avatarUrl', 'username', 'bio', 'updatedAt'
+              ])
+            ) ||
+            (
+              isWorkspaceServantOrAbove(workspaceId) &&
+              incoming().id == existing().id &&
+              incoming().workspaceId == existing().workspaceId &&
+              incoming().role == existing().role &&
+              incoming().createdAt == existing().createdAt &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'fullName', 'phone', 'avatarUrl', 'bio', 'updatedAt'
+              ])
+            )
+          );
+        allow delete: if isSignedIn() && isValidId(workspaceId) && isValidId(servantId) && isWorkspaceAdmin(workspaceId);
+      }
+
+      // Monthly Schedules Subcollection
+      match /monthlySchedules/{scheduleId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(scheduleId) && (
+          isEnvironmentOwner() || isWorkspaceMember(workspaceId)
+        );
+        allow list: if isEnvironmentOwner() || (
+          isSignedIn() && isWorkspaceMember(workspaceId) && existing().workspaceId == workspaceId
+        );
+        allow create: if isSignedIn() && isValidId(workspaceId) && isValidId(scheduleId) &&
+          workspaceExists(workspaceId) && isValidMonthlySchedule(incoming(), workspaceId) &&
+          isWorkspaceServantOrAbove(workspaceId);
+        allow update: if isSignedIn() && isValidId(workspaceId) && isValidId(scheduleId) &&
+          isValidMonthlySchedule(incoming(), workspaceId) && (
+            isEnvironmentOwner() ||
+            (
+              isWorkspaceServantOrAbove(workspaceId) &&
+              incoming().id == existing().id &&
+              incoming().workspaceId == existing().workspaceId &&
+              incoming().createdAt == existing().createdAt &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'date', 'grade', 'lessonTitle', 'memoryVerse',
+                'primaryTeacherId', 'primaryTeacherName',
+                'backupTeacherId', 'backupTeacherName',
+                'segments', 'notes', 'updatedAt'
+              ])
+            )
+          );
+        allow delete: if isSignedIn() && isValidId(workspaceId) && isValidId(scheduleId) && isWorkspaceAdmin(workspaceId);
+      }
+
+      // Visitation Schedules Subcollection
+      match /visitationSchedules/{visitId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(visitId) && (
+          isEnvironmentOwner() || isWorkspaceServantOrAbove(workspaceId)
+        );
+        allow list: if isEnvironmentOwner() || (
+          isSignedIn() && isWorkspaceServantOrAbove(workspaceId) && existing().workspaceId == workspaceId
+        );
+        allow create: if isSignedIn() && isValidId(workspaceId) && isValidId(visitId) &&
+          workspaceExists(workspaceId) && isValidVisitation(incoming(), workspaceId) &&
+          isWorkspaceServantOrAbove(workspaceId);
+        allow update: if isSignedIn() && isValidId(workspaceId) && isValidId(visitId) &&
+          isValidVisitation(incoming(), workspaceId) && (
+            isEnvironmentOwner() ||
+            (
+              isWorkspaceServantOrAbove(workspaceId) &&
+              incoming().id == existing().id &&
+              incoming().workspaceId == existing().workspaceId &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'servantId', 'servantName', 'status', 'weekLabel', 'notes', 'lastUpdatedAt'
+              ])
+            )
+          );
+        allow delete: if isSignedIn() && isValidId(workspaceId) && isValidId(visitId) && isWorkspaceAdmin(workspaceId);
+      }
+
+      // Announcements Subcollection
+      match /announcements/{announcementId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(announcementId) && (
+          isEnvironmentOwner() || isWorkspaceMember(workspaceId)
+        );
+        allow list: if isEnvironmentOwner() || (
+          isSignedIn() && isWorkspaceMember(workspaceId) && existing().workspaceId == workspaceId
+        );
+        allow create: if isSignedIn() && isValidId(workspaceId) && isValidId(announcementId) &&
+          workspaceExists(workspaceId) && isValidAnnouncement(incoming(), workspaceId) &&
+          isWorkspaceServantOrAbove(workspaceId);
+        allow update: if isSignedIn() && isValidId(workspaceId) && isValidId(announcementId) &&
+          isValidAnnouncement(incoming(), workspaceId) && (
+            isEnvironmentOwner() ||
+            (
+              isWorkspaceAdmin(workspaceId) &&
+              incoming().id == existing().id &&
+              incoming().workspaceId == existing().workspaceId &&
+              incoming().createdAt == existing().createdAt &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'title', 'body', 'target', 'isUrgent'
+              ])
+            )
+          );
+        allow delete: if isSignedIn() && isValidId(workspaceId) && isValidId(announcementId) && isWorkspaceAdmin(workspaceId);
+      }
+
+      // Change Requests Subcollection
+      match /changeRequests/{requestId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(requestId) && (
+          isEnvironmentOwner() ||
+          isWorkspaceServantOrAbove(workspaceId) ||
+          existing().ownerUid == request.auth.uid
+        );
+        allow list: if isEnvironmentOwner() || isWorkspaceServantOrAbove(workspaceId) || (
+          isSignedIn() && isWorkspaceMember(workspaceId) && existing().workspaceId == workspaceId && existing().ownerUid == request.auth.uid
+        );
+        allow create: if isSignedIn() && isValidId(workspaceId) && isValidId(requestId) &&
+          workspaceExists(workspaceId) && isValidChangeRequest(incoming(), workspaceId) &&
+          isWorkspaceMember(workspaceId) &&
+          incoming().ownerUid == request.auth.uid &&
+          incoming().status == 'pending';
+        allow update: if isSignedIn() && isValidId(workspaceId) && isValidId(requestId) &&
+          isValidChangeRequest(incoming(), workspaceId) && (
+            isEnvironmentOwner() ||
+            (
+              isWorkspaceAdmin(workspaceId) &&
+              existing().status == 'pending' &&
+              incoming().id == existing().id &&
+              incoming().workspaceId == existing().workspaceId &&
+              incoming().createdAt == existing().createdAt &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reviewedBy', 'reviewedAt'])
+            )
+          );
+        allow delete: if isSignedIn() && isValidId(workspaceId) && isValidId(requestId) && isWorkspaceAdmin(workspaceId);
+      }
+
+      // Servant Audit Logs Subcollection
+      match /servantLogs/{logId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(logId) && (
+          isEnvironmentOwner() || isWorkspaceAdmin(workspaceId)
+        );
+        allow list: if isEnvironmentOwner() || (isSignedIn() && isWorkspaceAdmin(workspaceId));
+        allow create: if isSignedIn() && isValidId(workspaceId) && isValidId(logId) &&
+          workspaceExists(workspaceId) && isValidServantLog(incoming(), workspaceId) &&
+          isWorkspaceServantOrAbove(workspaceId);
+        allow update, delete: if false;
+      }
+    }
+  }
+}

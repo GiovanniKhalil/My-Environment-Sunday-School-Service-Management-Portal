@@ -1,0 +1,264 @@
+{
+  "entities": {
+    "Workspace": {
+      "title": "Workspace",
+      "description": "Isolated Sunday School class workspace provisioned by the Environment Owner.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "churchName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "className": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "stageConfig": { "type": "string", "minLength": 2, "maxLength": 200 },
+        "grades": { "type": "array" },
+        "logoUrl": { "type": "string", "maxLength": 250000 },
+        "verse": { "type": "string", "maxLength": 300 },
+        "status": { "type": "string", "enum": ["active", "suspended"] },
+        "headServantId": { "type": "string", "maxLength": 128 },
+        "headServantName": { "type": "string", "maxLength": 120 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "studentCount": { "type": "number" },
+        "servantCount": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time", "maxLength": 64 },
+        "updatedAt": { "type": "string", "format": "date-time", "maxLength": 64 }
+      },
+      "required": ["id", "churchName", "className", "status", "ownerUid", "createdAt"]
+    },
+    "WorkspaceMember": {
+      "title": "WorkspaceMember",
+      "description": "Maps an authenticated Firebase UID to a role inside a specific workspace for Master Gate access checks.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "role": { "type": "string", "enum": ["head_servant", "assistant_head", "servant", "student"] },
+        "linkedProfileId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["uid", "workspaceId", "role", "createdAt"]
+    },
+    "GlobalUser": {
+      "title": "GlobalUser",
+      "description": "Global identity routing record for environment owner, applicants, and workspace users.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "username": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "role": { "type": "string", "enum": ["environment_owner", "applicant", "head_servant", "assistant_head", "servant", "student"] },
+        "workspaceId": { "type": "string", "maxLength": 128 },
+        "fullName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "status": { "type": "string", "enum": ["active", "pending", "approved", "rejected", "suspended"] },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "username", "role", "fullName", "status", "createdAt"]
+    },
+    "GlobalUserPrivate": {
+      "title": "GlobalUserPrivate",
+      "description": "Isolated PII and credential hashes for a GlobalUser.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "email": { "type": "string", "maxLength": 160 },
+        "passwordHash": { "type": "string", "maxLength": 128 },
+        "salt": { "type": "string", "maxLength": 64 },
+        "proposedChurchName": { "type": "string", "maxLength": 120 },
+        "proposedClassName": { "type": "string", "maxLength": 120 },
+        "serviceVision": { "type": "string", "maxLength": 1500 },
+        "mustChangePassword": { "type": "boolean" }
+      },
+      "required": ["userId"]
+    },
+    "EnvironmentChatChannel": {
+      "title": "EnvironmentChatChannel",
+      "description": "Metadata for Environment Leadership group and direct onboarding chat threads.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "type": { "type": "string", "enum": ["group", "direct"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "participantUid": { "type": "string", "maxLength": 128 },
+        "participantName": { "type": "string", "maxLength": 120 },
+        "participantRole": { "type": "string", "maxLength": 40 },
+        "workspaceId": { "type": "string", "maxLength": 128 },
+        "lastMessage": { "type": "string", "maxLength": 500 },
+        "lastMessageAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "type", "title"]
+    },
+    "EnvironmentChatMessage": {
+      "title": "EnvironmentChatMessage",
+      "description": "Real-time message inside an environment leadership or applicant support thread.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "channelId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "senderUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "senderName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "senderRole": { "type": "string", "maxLength": 40 },
+        "text": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "channelId", "senderUid", "senderName", "text", "createdAt"]
+    },
+    "Student": {
+      "title": "Student",
+      "description": "Sunday School student profile scoped strictly to a workspace.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "fullName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "grade": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "gender": { "type": "string", "enum": ["ذكر", "أنثى"] },
+        "birthDate": { "type": "string", "maxLength": 20 },
+        "points": { "type": "number" },
+        "username": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "workspaceId", "fullName", "grade", "points", "createdAt"]
+    },
+    "Servant": {
+      "title": "Servant",
+      "description": "Sunday School servant profile scoped strictly to a workspace.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "fullName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "role": { "type": "string", "enum": ["head_servant", "assistant_head", "servant"] },
+        "assignedGrade": { "type": "string", "maxLength": 80 },
+        "username": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "workspaceId", "fullName", "role", "createdAt"]
+    },
+    "MonthlySchedule": {
+      "title": "MonthlySchedule",
+      "description": "Weekly Sunday School curriculum, teachers, and 7 service segments.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "date": { "type": "string", "maxLength": 20 },
+        "grade": { "type": "string", "maxLength": 80 },
+        "lessonTitle": { "type": "string", "maxLength": 200 },
+        "memoryVerse": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "workspaceId", "date", "grade", "lessonTitle", "createdAt"]
+    },
+    "VisitationRecord": {
+      "title": "VisitationRecord",
+      "description": "Weekly student visitation assignment and follow-up status.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "studentId": { "type": "string", "maxLength": 128 },
+        "servantId": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["pending", "called", "visited", "no_answer", "special_care"] },
+        "lastUpdatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "workspaceId", "studentId", "servantId", "status"]
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Targeted announcement inside a workspace.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "body": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "target": { "type": "string", "enum": ["all", "students_only", "servants_only"] },
+        "isUrgent": { "type": "boolean" },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "workspaceId", "title", "body", "target", "createdAt"]
+    },
+    "ChangeRequest": {
+      "title": "ChangeRequest",
+      "description": "Structured data change request submitted by a student or parent.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "studentId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "field": { "type": "string", "maxLength": 64 },
+        "newValue": { "type": "string", "maxLength": 300 },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "workspaceId", "studentId", "field", "newValue", "status", "createdAt"]
+    },
+    "ServantLog": {
+      "title": "ServantLog",
+      "description": "Audit log for servant self-profile edits and leadership review.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "servantId": { "type": "string", "maxLength": 128 },
+        "action": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "workspaceId", "servantId", "action", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/workspaces/{workspaceId}": {
+      "schema": { "$ref": "#/entities/Workspace" },
+      "description": "Root workspace metadata documents."
+    },
+    "/workspaces/{workspaceId}/members/{uid}": {
+      "schema": { "$ref": "#/entities/WorkspaceMember" },
+      "description": "Workspace membership and role binding."
+    },
+    "/workspaces/{workspaceId}/students/{studentId}": {
+      "schema": { "$ref": "#/entities/Student" },
+      "description": "Workspace-isolated student records."
+    },
+    "/workspaces/{workspaceId}/servants/{servantId}": {
+      "schema": { "$ref": "#/entities/Servant" },
+      "description": "Workspace-isolated servant records."
+    },
+    "/workspaces/{workspaceId}/monthlySchedules/{scheduleId}": {
+      "schema": { "$ref": "#/entities/MonthlySchedule" },
+      "description": "Workspace-isolated weekly curriculum schedules."
+    },
+    "/workspaces/{workspaceId}/visitationSchedules/{visitId}": {
+      "schema": { "$ref": "#/entities/VisitationRecord" },
+      "description": "Workspace-isolated visitation tracking board."
+    },
+    "/workspaces/{workspaceId}/announcements/{announcementId}": {
+      "schema": { "$ref": "#/entities/Announcement" },
+      "description": "Workspace-isolated announcements wall."
+    },
+    "/workspaces/{workspaceId}/changeRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/ChangeRequest" },
+      "description": "Workspace-isolated student data change requests."
+    },
+    "/workspaces/{workspaceId}/servantLogs/{logId}": {
+      "schema": { "$ref": "#/entities/ServantLog" },
+      "description": "Workspace-isolated servant audit logs."
+    },
+    "/globalUsers/{userId}": {
+      "schema": { "$ref": "#/entities/GlobalUser" },
+      "description": "Global user routing records."
+    },
+    "/globalUsers/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/GlobalUserPrivate" },
+      "description": "Private PII and password credentials."
+    },
+    "/environmentChat/{channelId}": {
+      "schema": { "$ref": "#/entities/EnvironmentChatChannel" },
+      "description": "Environment Leadership and applicant chat channels."
+    },
+    "/environmentChat/{channelId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/EnvironmentChatMessage" },
+      "description": "Messages inside environment chat channels."
+    }
+  }
+}
