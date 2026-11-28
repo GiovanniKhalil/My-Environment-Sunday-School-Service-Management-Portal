@@ -393,6 +393,26 @@ export async function loginOwnerWithUsernamePasswordInFirestore(
   }
 
   const fbUser = await ensureAnonymousFirebaseAuth();
+  const nowIso = new Date().toISOString();
+  const claimProof = await sha256Hex(`${credsDoc.salt}:${cleanPass}:claim:owner_root`);
+
+  try {
+    await setDoc(doc(db, 'activeSessions', fbUser.uid), {
+      uid: fbUser.uid,
+      userId: 'owner_root',
+      loginKey: 'owner',
+      role: 'environment_owner',
+      workspaceId: '',
+      fullName: credsDoc.username || 'صاحب المنصة',
+      linkedProfileId: 'owner_root',
+      claimProof,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `activeSessions/${fbUser.uid}`);
+  }
+
   return ensureOwnerBootstrapInFirestore(fbUser);
 }
 

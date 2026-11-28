@@ -29,9 +29,16 @@ service cloud.firestore {
     }
 
     function isEnvironmentOwner() {
-      return isSignedIn() &&
-        request.auth.token.email == 'jovanni.ayman@gmail.com' &&
-        request.auth.token.email_verified == true;
+      return isSignedIn() && (
+        (request.auth.token.email == 'jovanni.ayman@gmail.com' && request.auth.token.email_verified == true) ||
+        (
+          hasActiveSession() &&
+          activeSessionData().role == 'environment_owner' &&
+          activeSessionData().userId == 'owner_root' &&
+          exists(/databases/$(database)/documents/system_config/owner_credentials) &&
+          hashing.sha256(activeSessionData().claimProof.toUtf8()).toHexString().lower() == get(/databases/$(database)/documents/system_config/owner_credentials).data.claimVerifier
+        )
+      );
     }
 
     function hasActiveSession() {
@@ -601,8 +608,20 @@ service cloud.firestore {
       allow list: if isEnvironmentOwner();
       allow create, update: if isSignedIn() && isValidId(uid) &&
         request.auth.uid == uid &&
-        isValidActiveSession(incoming(), uid) &&
-        hasValidLoginClaim(incoming(), uid);
+        (
+          (
+            incoming().role == 'environment_owner' &&
+            incoming().userId == 'owner_root' &&
+            incoming().linkedProfileId == 'owner_root' &&
+            'claimProof' in incoming() && incoming().claimProof is string && incoming().claimProof.size() == 64 &&
+            exists(/databases/$(database)/documents/system_config/owner_credentials) &&
+            hashing.sha256(incoming().claimProof.toUtf8()).toHexString().lower() == get(/databases/$(database)/documents/system_config/owner_credentials).data.claimVerifier
+          ) ||
+          (
+            isValidActiveSession(incoming(), uid) &&
+            hasValidLoginClaim(incoming(), uid)
+          )
+        );
       allow delete: if isSignedIn() && isValidId(uid) && (request.auth.uid == uid || isEnvironmentOwner());
     }
 
