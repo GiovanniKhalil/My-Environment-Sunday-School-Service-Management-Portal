@@ -86,6 +86,25 @@ export async function sha256Hex(input: string): Promise<string> {
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+export function generateSecureTempPassword(length = 8): string {
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const lower = 'abcdefghijkmnpqrstuvwxyz';
+  const digits = '23456789';
+  const all = upper + lower + digits;
+  const bytes = new Uint8Array(Math.max(6, length));
+  crypto.getRandomValues(bytes);
+  const chars = [
+    upper[bytes[0] % upper.length],
+    lower[bytes[1] % lower.length],
+    digits[bytes[2] % digits.length],
+    digits[bytes[3] % digits.length],
+  ];
+  for (let i = 4; i < bytes.length; i++) {
+    chars.push(all[bytes[i] % all.length]);
+  }
+  return chars.join('');
+}
+
 export function normalizePhone(phone: string): string {
   const digits = (phone || '').replace(/\D+/g, '');
   return digits.length >= 4 ? digits : (phone || '').trim();
@@ -831,6 +850,92 @@ export function subscribeOwnerApplicants(
     (err) => {
       if (onError) onError(err);
       handleFirestoreError(err, OperationType.LIST, 'globalUsers');
+    }
+  );
+}
+
+export interface OwnerLeaderAccountItem {
+  account: WorkspaceAccount;
+  workspace: Workspace;
+}
+
+export function subscribeOwnerLeaderAccounts(
+  workspaces: Workspace[],
+  onData: (items: OwnerLeaderAccountItem[]) => void,
+  onError?: (err: unknown) => void
+): Unsubscribe {
+  if (workspaces.length === 0) {
+    onData([]);
+    return () => {};
+  }
+
+  const perWsMap = new Map<string, WorkspaceAccount[]>();
+  const wsById = new Map(workspaces.map((w) => [w.id, w]));
+
+  const emitAll = () => {
+    const merged: OwnerLeaderAccountItem[] = [];
+    for (const [wsId, list] of perWsMap.entries()) {
+      const ws = wsById.get(wsId);
+      if (!ws) continue;
+      for (const account of list) {
+        merged.push({ account, workspace: ws });
+      }
+    }
+    merged.sort((a, b) => {
+      const roleOrder = (r: UserRole) => (r === 'head_servant' ? 0 : 1);
+      const diff = roleOrder(a.account.role) - roleOrder(b.account.role);
+      if (diff !== 0) return diff;
+      return (a.workspace.className || '').localeCompare(b.workspace.className || '', 'ar');
+    });
+    onData(merged);
+  };
+
+  const unsubs: Unsubscribe[] = workspaces.map((ws) => {
+    const q = query(
+      collection(db, 'workspaces', ws.id, 'accounts'),
+      where('role', 'in', ['head_servant', 'assistant_head'])
+    );
+    return onSnapshot(
+      q,
+      (snap) => {
+        perWsMap.set(
+          ws.id,
+          snap.docs.map((d) => d.data() as WorkspaceAccount)
+        );
+        emitAll();
+      },
+      (err) => {
+        if (onError) onError(err);
+        handleFirestoreError(err, OperationType.LIST, `workspaces/${ws.id}/accounts`);
+      }
+    );
+  });
+
+  return () => {
+    for (const u of unsubs) u();
+  };
+}
+
+export function subscribeWorkspaceAccounts(
+  workspaceId: string,
+  onData: (accounts: WorkspaceAccount[]) => void,
+  onError?: (err: unknown) => void
+): Unsubscribe {
+  if (!workspaceId) {
+    onData([]);
+    return () => {};
+  }
+  return onSnapshot(
+    collection(db, 'workspaces', workspaceId, 'accounts'),
+    (snap) => {
+      const list = snap.docs
+        .map((d) => d.data() as WorkspaceAccount)
+        .sort((a, b) => (a.fullName || '').localeCompare(b.fullName || '', 'ar'));
+      onData(list);
+    },
+    (err) => {
+      if (onError) onError(err);
+      handleFirestoreError(err, OperationType.LIST, `workspaces/${workspaceId}/accounts`);
     }
   );
 }
@@ -1584,7 +1689,7 @@ export async function addStudentInFirestore(
     tempPassword: string;
   },
   workspace: Workspace
-): Promise<void> {
+): Promise<string> {
   const cleanName = form.fullName.trim();
   const cleanUser = form.username.trim();
   const cleanPass = String(form.tempPassword || '123456').trim();
@@ -1708,6 +1813,7 @@ export async function addStudentInFirestore(
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `workspaces/${workspaceId}/students/${stuId}`);
   }
+  return account.id;
 }
 
 export async function importStudentsInFirestore(
@@ -2303,7 +2409,7 @@ export async function addServantInFirestore(
   workspaceId: string,
   form: {
     fullName: string;
-    role: 'servant' | 'assistant_head';
+    role: 'head_servant' | 'assistant_head' | 'servant';
     phone: string;
     assignedGrade: string;
     username: string;
@@ -2311,7 +2417,7 @@ export async function addServantInFirestore(
     bio: string;
   },
   workspace: Workspace
-): Promise<void> {
+): Promise<string> {
   const cleanName = form.fullName.trim();
   const cleanUser = form.username.trim();
   const cleanPhone = form.phone.trim();
@@ -2429,6 +2535,7 @@ export async function addServantInFirestore(
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `workspaces/${workspaceId}/servants/${srvId}`);
   }
+  return account.id;
 }
 
 export async function updateServantInFirestore(
@@ -2524,6 +2631,103 @@ export async function resetWorkspaceAccountPasswordInFirestore(
     await batch.commit();
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, `loginDirectory/${loginKey}`);
+  }
+}
+
+export async function updateWorkspaceAccountUsernameInFirestore(
+  workspaceId: string,
+  account: WorkspaceAccount,
+  newUsername: string
+): Promise<void> {
+  const cleanNew = newUsername.trim();
+  const cleanOld = account.username.trim();
+  if (cleanNew.length < 2 || cleanNew.length > 64) {
+    throw new Error('اسم المستخدم يجب أن يكون بين حرفين و64 حرفاً.');
+  }
+  if (cleanNew === cleanOld) return;
+
+  const oldLoginKey = toLoginKey(cleanOld);
+  const newLoginKey = toLoginKey(cleanNew);
+
+  let oldDirData: LoginDirectoryEntry | null = null;
+  try {
+    const [newSnap, oldSnap] = await Promise.all([
+      getDoc(doc(db, 'loginDirectory', newLoginKey)),
+      getDoc(doc(db, 'loginDirectory', oldLoginKey)),
+    ]);
+    if (newSnap.exists()) {
+      throw new Error('اسم المستخدم الجديد مستخدم بالفعل لحساب آخر.');
+    }
+    if (!oldSnap.exists()) {
+      throw new Error('تعذر العثور على سجل الدخول المرتبط بهذا الحساب.');
+    }
+    oldDirData = oldSnap.data() as LoginDirectoryEntry;
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      (err.message.includes('مستخدم بالفعل') || err.message.includes('تعذر العثور'))
+    ) {
+      throw err;
+    }
+    handleFirestoreError(err, OperationType.GET, `loginDirectory/${newLoginKey}`);
+  }
+
+  if (!oldDirData) return;
+  const nowIso = new Date().toISOString();
+  const userId = String(oldDirData.userId || `usr_${account.linkedProfileId}`);
+
+  const nextDirEntry: LoginDirectoryEntry = stripUndefined({
+    loginKey: newLoginKey,
+    userId,
+    username: cleanNew,
+    role: oldDirData.role,
+    workspaceId: oldDirData.workspaceId,
+    fullName: oldDirData.fullName,
+    status: oldDirData.status,
+    mustChangePassword: oldDirData.mustChangePassword,
+    linkedProfileId: oldDirData.linkedProfileId,
+    salt: oldDirData.salt,
+    passwordHash: oldDirData.passwordHash,
+    claimVerifier: oldDirData.claimVerifier,
+    phoneProofVerifier: oldDirData.phoneProofVerifier || '',
+    lastResetProof: oldDirData.lastResetProof || undefined,
+    createdAt: oldDirData.createdAt,
+    updatedAt: nowIso,
+  });
+
+  const ops: BatchOp[] = [
+    { type: 'set', ref: doc(db, 'loginDirectory', newLoginKey), data: { ...nextDirEntry } },
+    { type: 'delete', ref: doc(db, 'loginDirectory', oldLoginKey) },
+    {
+      type: 'update',
+      ref: doc(db, 'workspaces', workspaceId, 'accounts', account.id),
+      data: { username: cleanNew, updatedAt: nowIso },
+    },
+    {
+      type: 'update',
+      ref: doc(db, 'globalUsers', userId),
+      data: { username: cleanNew, updatedAt: nowIso },
+    },
+  ];
+
+  if (account.role === 'student') {
+    ops.push({
+      type: 'update',
+      ref: doc(db, 'workspaces', workspaceId, 'students', account.linkedProfileId),
+      data: { username: cleanNew, updatedAt: nowIso },
+    });
+  } else {
+    ops.push({
+      type: 'update',
+      ref: doc(db, 'workspaces', workspaceId, 'servants', account.linkedProfileId),
+      data: { username: cleanNew, updatedAt: nowIso },
+    });
+  }
+
+  try {
+    await commitBatchOps(ops);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `loginDirectory/${newLoginKey}`);
   }
 }
 

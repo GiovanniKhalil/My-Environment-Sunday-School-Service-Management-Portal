@@ -39,6 +39,7 @@ import {
 } from '../services/firestoreService';
 import { StageBuilder } from './StageBuilder';
 import { UnifiedChatHub } from './UnifiedChatHub';
+import { OwnerSecurityHub } from './OwnerSecurityHub';
 
 interface OwnerDashboardProps {
   currentUser: SessionUser;
@@ -46,7 +47,7 @@ interface OwnerDashboardProps {
   onLogout: () => void;
 }
 
-type OwnerTab = 'workspaces' | 'requests' | 'chat';
+type OwnerTab = 'workspaces' | 'requests' | 'security' | 'chat';
 
 export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
   currentUser,
@@ -330,6 +331,17 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
             </button>
             <button
               type="button"
+              onClick={() => setActiveTab('security')}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap cursor-pointer ${
+                activeTab === 'security'
+                  ? 'bg-[#7A1523] text-white'
+                  : 'text-[#755953] hover:text-[#2C1813]'
+              }`}
+            >
+              إدارة الحسابات والأمان
+            </button>
+            <button
+              type="button"
               onClick={() => setActiveTab('chat')}
               className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap cursor-pointer ${
                 activeTab === 'chat'
@@ -380,6 +392,15 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
             }`}
           >
             الطلبات ({pendingApplicants.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('security')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap cursor-pointer ${
+              activeTab === 'security' ? 'bg-[#7A1523] text-white' : 'text-[#755953]'
+            }`}
+          >
+            الحسابات والأمان
           </button>
           <button
             type="button"
@@ -676,7 +697,12 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
           </section>
         )}
 
-        {/* Tab 3: Unified Leadership Chat Hub */}
+        {/* Tab 3: Central Accounts & Security Hub */}
+        {activeTab === 'security' && (
+          <OwnerSecurityHub currentUser={currentUser} workspaces={workspaces} />
+        )}
+
+        {/* Tab 4: Unified Leadership Chat Hub */}
         {activeTab === 'chat' && (
           <section className="space-y-4">
             <div>

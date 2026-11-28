@@ -63,6 +63,10 @@ service cloud.firestore {
       return memberData(workspaceId).role;
     }
 
+    function isWorkspaceHeadServant(workspaceId) {
+      return isWorkspaceMember(workspaceId) && memberRole(workspaceId) == 'head_servant';
+    }
+
     function isWorkspaceAdmin(workspaceId) {
       return isEnvironmentOwner() || (
         isWorkspaceMember(workspaceId) &&
@@ -516,6 +520,7 @@ service cloud.firestore {
           incoming().workspaceId != '' &&
           existsAfter(/databases/$(database)/documents/workspaces/$(incoming().workspaceId)) &&
           (
+            (isWorkspaceHeadServant(incoming().workspaceId) && incoming().role in ['head_servant', 'assistant_head', 'servant', 'student']) ||
             (isWorkspaceAdmin(incoming().workspaceId) && incoming().role in ['assistant_head', 'servant', 'student']) ||
             (isWorkspaceServantOrAbove(incoming().workspaceId) && incoming().role == 'student')
           )
@@ -533,6 +538,7 @@ service cloud.firestore {
         (
           existing().workspaceId != '' &&
           isWorkspaceAdmin(existing().workspaceId) &&
+          (existing().role != 'head_servant' || isWorkspaceHeadServant(existing().workspaceId)) &&
           incoming().workspaceId == existing().workspaceId &&
           incoming().userId == existing().userId &&
           incoming().role in ['head_servant', 'assistant_head', 'servant', 'student'] &&
@@ -575,7 +581,11 @@ service cloud.firestore {
       );
       allow delete: if isSignedIn() && isValidLoginKey(loginKey) && (
         isEnvironmentOwner() ||
-        (existing().workspaceId != '' && isWorkspaceAdmin(existing().workspaceId))
+        (
+          existing().workspaceId != '' &&
+          isWorkspaceAdmin(existing().workspaceId) &&
+          (existing().role != 'head_servant' || isWorkspaceHeadServant(existing().workspaceId))
+        )
       );
     }
 
@@ -624,6 +634,7 @@ service cloud.firestore {
           'workspaceId' in existing() &&
           existing().workspaceId != '' &&
           isWorkspaceAdmin(existing().workspaceId) &&
+          (existing().role != 'head_servant' || isWorkspaceHeadServant(existing().workspaceId)) &&
           incoming().workspaceId == existing().workspaceId &&
           incoming().role in ['head_servant', 'assistant_head', 'servant', 'student'] &&
           incoming().createdAt == existing().createdAt
@@ -817,12 +828,14 @@ service cloud.firestore {
           isValidWorkspaceAccount(incoming(), workspaceId) && (
             isEnvironmentOwner() ||
             (
+              isWorkspaceActive(workspaceId) &&
               isWorkspaceAdmin(workspaceId) &&
+              (existing().role != 'head_servant' || isWorkspaceHeadServant(workspaceId)) &&
               incoming().id == existing().id &&
               incoming().workspaceId == existing().workspaceId &&
               incoming().createdAt == existing().createdAt &&
               incoming().diff(existing()).affectedKeys().hasOnly([
-                'fullName', 'phone', 'role', 'mustChangePassword', 'isActive', 'updatedAt'
+                'username', 'fullName', 'phone', 'role', 'mustChangePassword', 'isActive', 'updatedAt'
               ])
             ) ||
             (

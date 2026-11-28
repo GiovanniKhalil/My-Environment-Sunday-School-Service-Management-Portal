@@ -1,8 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Check,
-  KeyRound,
-  MessageCircle,
   MessageSquare,
   Plus,
   Settings,
@@ -19,7 +17,6 @@ import type {
   WorkspaceStage,
 } from '../../types';
 import {
-  buildWhatsAppUrl,
   compressImageToDataUrl,
   DEFAULT_PLATFORM_EMBLEM,
   formatArabicDate,
@@ -29,13 +26,13 @@ import {
 } from '../../utils/api';
 import {
   addServantInFirestore,
-  resetWorkspaceAccountPasswordInFirestore,
   reviewChangeRequestInFirestore,
   updateServantInFirestore,
   updateWorkspaceSettingsInFirestore,
 } from '../../services/firestoreService';
 import { StageBuilder } from '../StageBuilder';
 import { UnifiedChatHub } from '../UnifiedChatHub';
+import { AccountsSecurityPanel } from '../AccountsSecurityPanel';
 
 interface LeadershipAndSecurityTabProps {
   bundle: WorkspaceBundle;
@@ -66,8 +63,6 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
   const [subTab, setSubTab] = useState<'servants' | 'approvals' | 'security' | 'branding' | 'chat'>('servants');
   const [showAddServant, setShowAddServant] = useState(false);
   const [editingServant, setEditingServant] = useState<Servant | null>(null);
-  const [resetTargetId, setResetTargetId] = useState<string>('');
-  const [tempPassInput, setTempPassInput] = useState('123456');
   const [feedback, setFeedback] = useState('');
   const [error, setError] = useState('');
 
@@ -156,20 +151,6 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
     await reviewChangeRequestInFirestore(workspace.id, cr, status, currentUser.fullName, stu);
     setFeedback(status === 'approved' ? 'تم اعتماد وتطبيق التعديل.' : 'تم رفض الطلب.');
     await onRefresh();
-  };
-
-  const handleResetAccountPassword = async (accountId: string) => {
-    setError('');
-    try {
-      const account = accounts.find((a) => a.id === accountId);
-      if (!account) return;
-      await resetWorkspaceAccountPasswordInFirestore(workspace.id, account, tempPassInput);
-      setResetTargetId('');
-      setFeedback('تم تعيين كلمة المرور المؤقتة بنجاح. يمكنك إرسالها عبر واتساب الآن.');
-      await onRefresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'تعذر تعيين كلمة المرور.');
-    }
   };
 
   const handleSaveBranding = async (e: React.FormEvent) => {
@@ -434,102 +415,12 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
 
       {/* Subtab: Account Security Console */}
       {subTab === 'security' && isAdmin && (
-        <section className="bg-[#FFFDF9] border border-[#EAE0D5] rounded-2xl overflow-hidden">
-          <div className="px-5 py-4 border-b border-[#EAE0D5] flex items-center justify-between">
-            <div>
-              <h3 className="font-extrabold text-base text-[#2C1813] flex items-center gap-2">
-                <KeyRound className="w-5 h-5 text-[#7A1523]" />
-                إدارة كلمات المرور المؤقتة وإرسالها عبر واتساب
-              </h3>
-              <p className="text-xs text-[#755953] mt-0.5">
-                عند تعيين كلمة مرور مؤقتة، يُطلب من المستخدم تغييرها إجبارياً في أول تسجيل دخول
-              </p>
-            </div>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-right text-sm">
-              <thead className="bg-[#FAF6EE] border-b border-[#EAE0D5] text-xs text-[#755953]">
-                <tr>
-                  <th className="py-3 px-4 font-bold">الاسم</th>
-                  <th className="py-3 px-4 font-bold">الدور</th>
-                  <th className="py-3 px-4 font-bold">اسم المستخدم</th>
-                  <th className="py-3 px-4 font-bold">الحالة</th>
-                  <th className="py-3 px-4 font-bold text-left">إجراءات الأمان</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#EAE0D5]">
-                {accounts.map((acc) => (
-                  <tr key={acc.id}>
-                    <td className="py-3 px-4 font-bold text-[#2C1813]">{acc.fullName}</td>
-                    <td className="py-3 px-4 text-xs text-[#755953]">{ROLE_ARABIC[acc.role]}</td>
-                    <td className="py-3 px-4 text-xs font-mono text-[#2C1813]">{acc.username}</td>
-                    <td className="py-3 px-4 text-xs">
-                      {acc.mustChangePassword ? (
-                        <span className="font-bold text-[#A46714]">بانتظار تغيير كلمة المرور</span>
-                      ) : (
-                        <span className="text-emerald-700 font-bold">نشط</span>
-                      )}
-                    </td>
-                    <td className="py-3 px-4 text-left">
-                      {resetTargetId === acc.id ? (
-                        <div className="inline-flex items-center gap-2">
-                          <input
-                            type="text"
-                            dir="ltr"
-                            value={tempPassInput}
-                            onChange={(e) => setTempPassInput(e.target.value)}
-                            className="w-28 bg-[#FAF6EE] border border-[#EAE0D5] rounded-lg px-2 py-1 text-xs font-mono"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => handleResetAccountPassword(acc.id)}
-                            className="px-3 py-1 rounded-lg bg-[#7A1523] text-white text-xs font-bold cursor-pointer"
-                          >
-                            حفظ
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setResetTargetId('')}
-                            className="px-2 py-1 text-xs text-[#755953] cursor-pointer"
-                          >
-                            إلغاء
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="inline-flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setTempPassInput('123456');
-                              setResetTargetId(acc.id);
-                            }}
-                            className="px-3 py-1.5 rounded-xl border border-[#EAE0D5] hover:bg-[#FAF6EE] text-xs font-bold cursor-pointer"
-                          >
-                            تعيين كلمة مرور
-                          </button>
-                          {acc.phone && (
-                            <a
-                              href={buildWhatsAppUrl(
-                                acc.phone,
-                                `سلام ونعمة ${acc.fullName}، بيانات دخولكم لبوابة ${workspace.className}:\nاسم المستخدم: ${acc.username}\nكلمة المرور المؤقتة: ${tempPassInput}`
-                              )}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold"
-                            >
-                              <MessageCircle className="w-3.5 h-3.5" />
-                              واتساب
-                            </a>
-                          )}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
+        <AccountsSecurityPanel
+          workspace={workspace}
+          accounts={accounts}
+          currentUserRole={currentUser.role}
+          onChanged={onRefresh}
+        />
       )}
 
       {/* Subtab: Workspace Branding Settings */}
