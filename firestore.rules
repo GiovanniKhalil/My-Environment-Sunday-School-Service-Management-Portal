@@ -46,6 +46,11 @@ service cloud.firestore {
       return exists(/databases/$(database)/documents/workspaces/$(workspaceId));
     }
 
+    function isWorkspaceActive(workspaceId) {
+      return workspaceExists(workspaceId) &&
+        get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.status == 'active';
+    }
+
     function isWorkspaceMember(workspaceId) {
       return isSignedIn() && exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
     }
@@ -471,7 +476,11 @@ service cloud.firestore {
 
     function isChannelReader(channelId, chData) {
       return isEnvironmentOwner() ||
-        (channelId == 'global_leaders' && hasActiveSession() && activeSessionData().role == 'head_servant') ||
+        (channelId == 'global_leaders' && hasActiveSession() && (
+          activeSessionData().role == 'head_servant' ||
+          (exists(/databases/$(database)/documents/globalUsers/$(activeSessionData().userId)) &&
+           get(/databases/$(database)/documents/globalUsers/$(activeSessionData().userId)).data.role == 'head_servant')
+        )) ||
         (('isBroadcast' in chData) && chData.isBroadcast == true && hasActiveSession() && activeSessionData().role == 'head_servant') ||
         (('participantUid' in chData) && chData.participantUid == request.auth.uid) ||
         (('participantUserId' in chData) && hasActiveSession() && activeSessionData().userId == chData.participantUserId) ||
@@ -487,7 +496,7 @@ service cloud.firestore {
           (('participantUid' in chData) && chData.participantUid == request.auth.uid) ||
           (('participantUserId' in chData) && hasActiveSession() && activeSessionData().userId == chData.participantUserId) ||
           (chData.type == 'group' && ('memberIds' in chData) && hasActiveSession() && activeSessionData().userId in chData.memberIds) ||
-          (chData.type == 'workspace_internal' && ('workspaceId' in chData) && chData.workspaceId is string && isWorkspaceServantOrAbove(chData.workspaceId))
+          (chData.type == 'workspace_internal' && ('workspaceId' in chData) && chData.workspaceId is string && isWorkspaceActive(chData.workspaceId) && isWorkspaceServantOrAbove(chData.workspaceId))
         )
       );
     }
@@ -731,6 +740,7 @@ service cloud.firestore {
       allow update: if isSignedIn() && isValidId(workspaceId) && isValidWorkspace(incoming()) && (
         isEnvironmentOwner() ||
         (
+          existing().status == 'active' &&
           isWorkspaceAdmin(workspaceId) &&
           incoming().id == existing().id &&
           incoming().ownerUid == existing().ownerUid &&
@@ -742,6 +752,7 @@ service cloud.firestore {
           ])
         ) ||
         (
+          existing().status == 'active' &&
           isWorkspaceServantOrAbove(workspaceId) &&
           incoming().id == existing().id &&
           incoming().ownerUid == existing().ownerUid &&
@@ -842,12 +853,13 @@ service cloud.firestore {
           isSignedIn() && isWorkspaceServantOrAbove(workspaceId) && existing().workspaceId == workspaceId
         );
         allow create: if isSignedIn() && isValidId(workspaceId) && isValidId(studentId) &&
-          workspaceExists(workspaceId) && isValidStudent(incoming(), workspaceId) &&
-          isWorkspaceServantOrAbove(workspaceId);
+          isValidStudent(incoming(), workspaceId) &&
+          (isEnvironmentOwner() || (isWorkspaceActive(workspaceId) && isWorkspaceServantOrAbove(workspaceId)));
         allow update: if isSignedIn() && isValidId(workspaceId) && isValidId(studentId) &&
           isValidStudent(incoming(), workspaceId) && (
             isEnvironmentOwner() ||
             (
+              isWorkspaceActive(workspaceId) &&
               isWorkspaceServantOrAbove(workspaceId) &&
               incoming().id == existing().id &&
               incoming().workspaceId == existing().workspaceId &&
@@ -859,7 +871,8 @@ service cloud.firestore {
               ])
             )
           );
-        allow delete: if isSignedIn() && isValidId(workspaceId) && isValidId(studentId) && isWorkspaceAdmin(workspaceId);
+        allow delete: if isSignedIn() && isValidId(workspaceId) && isValidId(studentId) &&
+          (isEnvironmentOwner() || (isWorkspaceActive(workspaceId) && isWorkspaceAdmin(workspaceId)));
       }
 
       // Servants Subcollection

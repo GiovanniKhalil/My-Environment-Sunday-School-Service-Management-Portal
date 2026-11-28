@@ -962,6 +962,23 @@ export async function createWorkspaceInFirestore(payload: {
 
   const ops: BatchOp[] = [
     { type: 'set', ref: doc(db, 'workspaces', workspaceId), data: { ...newWorkspace } },
+    ...(payload.applicantId
+      ? [
+          {
+            type: 'set' as const,
+            ref: doc(db, 'workspaces', workspaceId, 'members', payload.applicantId),
+            data: {
+              uid: payload.applicantId,
+              workspaceId,
+              role: 'head_servant',
+              linkedProfileId: headServantId,
+              userId: headUserId,
+              loginKey,
+              createdAt: nowIso,
+            },
+          },
+        ]
+      : []),
     {
       type: 'set',
       ref: doc(db, 'workspaces', workspaceId, 'servants', headServantId),
@@ -975,7 +992,7 @@ export async function createWorkspaceInFirestore(payload: {
     {
       type: 'set',
       ref: doc(db, 'globalUsers', headUserId),
-      data: {
+      data: stripUndefined({
         id: headUserId,
         username: cleanHeadUser,
         role: 'head_servant',
@@ -984,10 +1001,11 @@ export async function createWorkspaceInFirestore(payload: {
         status: 'active',
         mustChangePassword: true,
         linkedProfileId: headServantId,
+        ownerUid: payload.applicantId || undefined,
         approvedWorkspaceId: workspaceId,
         createdAt: nowIso,
         updatedAt: nowIso,
-      },
+      }),
     },
     {
       type: 'set',
