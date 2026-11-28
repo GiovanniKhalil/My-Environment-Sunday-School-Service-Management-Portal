@@ -137,13 +137,20 @@ service cloud.firestore {
     function isValidChatChannel(data) {
       return data.keys().hasAll(['id', 'type', 'title']) &&
         data.keys().hasOnly([
-          'id', 'type', 'title', 'participantUid', 'participantUserId',
+          'id', 'type', 'title', 'isBroadcast', 'isCustomGroup', 'memberIds', 'memberUids',
+          'createdBy', 'createdAt', 'participantUid', 'participantUserId',
           'participantName', 'participantRole', 'workspaceId',
           'churchName', 'className', 'lastMessage', 'lastMessageAt'
         ]) &&
         isValidId(data.id) &&
         data.type in ['group', 'direct', 'workspace_internal', 'applicant_direct'] &&
         data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
+        (!('isBroadcast' in data) || (data.isBroadcast is bool)) &&
+        (!('isCustomGroup' in data) || (data.isCustomGroup is bool)) &&
+        (!('memberIds' in data) || (data.memberIds is list && data.memberIds.size() <= 100 && (data.memberIds.size() == 0 || data.memberIds[0] is string))) &&
+        (!('memberUids' in data) || (data.memberUids is list && data.memberUids.size() <= 100 && (data.memberUids.size() == 0 || data.memberUids[0] is string))) &&
+        (!('createdBy' in data) || (data.createdBy is string && data.createdBy.size() <= 128)) &&
+        (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64)) &&
         (!('participantUid' in data) || (data.participantUid is string && data.participantUid.size() <= 128)) &&
         (!('participantUserId' in data) || (data.participantUserId is string && data.participantUserId.size() <= 128)) &&
         (!('participantName' in data) || (data.participantName is string && data.participantName.size() <= 120)) &&
@@ -390,12 +397,16 @@ service cloud.firestore {
       allow get: if isSignedIn() && isValidId(channelId) && (
         isEnvironmentOwner() ||
         channelId == 'global_leaders' ||
+        ('isBroadcast' in existing() && existing().isBroadcast == true) ||
         existing().participantUid == request.auth.uid ||
+        (existing().type == 'group' && ('memberUids' in existing()) && request.auth.uid in existing().memberUids) ||
         (existing().type == 'workspace_internal' && existing().workspaceId is string && isWorkspaceServantOrAbove(existing().workspaceId))
       );
       allow list: if isEnvironmentOwner() || (
         isSignedIn() && (
-          existing().type == 'group' ||
+          existing().id == 'global_leaders' ||
+          ('isBroadcast' in existing() && existing().isBroadcast == true) ||
+          (existing().type == 'group' && ('memberUids' in existing()) && request.auth.uid in existing().memberUids) ||
           existing().participantUid == request.auth.uid
         )
       );
@@ -407,8 +418,10 @@ service cloud.firestore {
       allow update: if isSignedIn() && isValidId(channelId) && isValidChatChannel(incoming()) && (
         isEnvironmentOwner() ||
         (
+          channelId != 'global_leaders' &&
+          (!('isBroadcast' in existing()) || existing().isBroadcast == false) &&
           (
-            existing().type == 'group' ||
+            (existing().type == 'group' && ('memberUids' in existing()) && request.auth.uid in existing().memberUids) ||
             existing().participantUid == request.auth.uid ||
             (existing().type == 'workspace_internal' && existing().workspaceId is string && isWorkspaceServantOrAbove(existing().workspaceId))
           ) &&
@@ -423,7 +436,14 @@ service cloud.firestore {
         allow get: if isSignedIn() && isValidId(channelId) && isValidId(messageId) && (
           isEnvironmentOwner() ||
           channelId == 'global_leaders' ||
+          ('isBroadcast' in get(/databases/$(database)/documents/environmentChat/$(channelId)).data &&
+           get(/databases/$(database)/documents/environmentChat/$(channelId)).data.isBroadcast == true) ||
           get(/databases/$(database)/documents/environmentChat/$(channelId)).data.participantUid == request.auth.uid ||
+          (
+            get(/databases/$(database)/documents/environmentChat/$(channelId)).data.type == 'group' &&
+            ('memberUids' in get(/databases/$(database)/documents/environmentChat/$(channelId)).data) &&
+            request.auth.uid in get(/databases/$(database)/documents/environmentChat/$(channelId)).data.memberUids
+          ) ||
           (
             get(/databases/$(database)/documents/environmentChat/$(channelId)).data.type == 'workspace_internal' &&
             get(/databases/$(database)/documents/environmentChat/$(channelId)).data.workspaceId is string &&
@@ -436,6 +456,11 @@ service cloud.firestore {
             existing().senderUid == request.auth.uid ||
             get(/databases/$(database)/documents/environmentChat/$(channelId)).data.participantUid == request.auth.uid ||
             (
+              get(/databases/$(database)/documents/environmentChat/$(channelId)).data.type == 'group' &&
+              ('memberUids' in get(/databases/$(database)/documents/environmentChat/$(channelId)).data) &&
+              request.auth.uid in get(/databases/$(database)/documents/environmentChat/$(channelId)).data.memberUids
+            ) ||
+            (
               get(/databases/$(database)/documents/environmentChat/$(channelId)).data.type == 'workspace_internal' &&
               get(/databases/$(database)/documents/environmentChat/$(channelId)).data.workspaceId is string &&
               isWorkspaceServantOrAbove(get(/databases/$(database)/documents/environmentChat/$(channelId)).data.workspaceId)
@@ -446,12 +471,23 @@ service cloud.firestore {
           isValidChatMessage(incoming(), channelId) &&
           exists(/databases/$(database)/documents/environmentChat/$(channelId)) && (
             isEnvironmentOwner() ||
-            channelId == 'global_leaders' ||
-            get(/databases/$(database)/documents/environmentChat/$(channelId)).data.participantUid == request.auth.uid ||
             (
-              get(/databases/$(database)/documents/environmentChat/$(channelId)).data.type == 'workspace_internal' &&
-              get(/databases/$(database)/documents/environmentChat/$(channelId)).data.workspaceId is string &&
-              isWorkspaceServantOrAbove(get(/databases/$(database)/documents/environmentChat/$(channelId)).data.workspaceId)
+              channelId != 'global_leaders' &&
+              (!('isBroadcast' in get(/databases/$(database)/documents/environmentChat/$(channelId)).data) ||
+               get(/databases/$(database)/documents/environmentChat/$(channelId)).data.isBroadcast == false) &&
+              (
+                get(/databases/$(database)/documents/environmentChat/$(channelId)).data.participantUid == request.auth.uid ||
+                (
+                  get(/databases/$(database)/documents/environmentChat/$(channelId)).data.type == 'group' &&
+                  ('memberUids' in get(/databases/$(database)/documents/environmentChat/$(channelId)).data) &&
+                  request.auth.uid in get(/databases/$(database)/documents/environmentChat/$(channelId)).data.memberUids
+                ) ||
+                (
+                  get(/databases/$(database)/documents/environmentChat/$(channelId)).data.type == 'workspace_internal' &&
+                  get(/databases/$(database)/documents/environmentChat/$(channelId)).data.workspaceId is string &&
+                  isWorkspaceServantOrAbove(get(/databases/$(database)/documents/environmentChat/$(channelId)).data.workspaceId)
+                )
+              )
             )
           );
         allow update, delete: if isEnvironmentOwner() && isValidId(channelId) && isValidId(messageId);

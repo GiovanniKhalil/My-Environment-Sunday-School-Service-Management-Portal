@@ -260,6 +260,11 @@ export interface EnvironmentChatChannel {
   id: string;
   type: ChatChannelType;
   title: string;
+  isBroadcast?: boolean;
+  isCustomGroup?: boolean;
+  memberIds?: string[];
+  createdBy?: string;
+  createdAt?: string;
   participantUserId?: string;
   participantName?: string;
   participantRole?: UserRole;
@@ -268,6 +273,17 @@ export interface EnvironmentChatChannel {
   className?: string;
   lastMessage: string;
   lastMessageAt: string;
+}
+
+export interface HeadServantSummary {
+  id: string;
+  fullName: string;
+  username: string;
+  phone: string;
+  workspaceId: string;
+  className: string;
+  churchName: string;
+  status: AccountStatus;
 }
 
 export interface EnvironmentChatMessage {

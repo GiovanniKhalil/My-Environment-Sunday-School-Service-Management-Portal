@@ -20,6 +20,7 @@ import type {
   ChangeRequest,
   EnvironmentChatChannel,
   EnvironmentChatMessage,
+  HeadServantSummary,
   MonthlySchedule,
   Servant,
   ServiceSegmentDetailsMap,
@@ -257,10 +258,79 @@ function normalizeWorkspaceAndChannels(ws: Workspace, state: DatabaseState): Wor
   return ws;
 }
 
+function isBroadcastChannel(channel: Pick<EnvironmentChatChannel, 'id' | 'isBroadcast'>): boolean {
+  return channel.id === 'global_leaders' || channel.isBroadcast === true;
+}
+
+function getHeadServantsSummary(state: DatabaseState): HeadServantSummary[] {
+  return state.globalUsers
+    .filter(
+      (u) =>
+        u.role === 'head_servant' &&
+        u.status !== 'suspended' &&
+        u.status !== 'rejected' &&
+        Boolean(u.workspaceId) &&
+        Boolean(state.workspaces[u.workspaceId])
+    )
+    .map((u) => {
+      const ws = state.workspaces[u.workspaceId]?.workspace;
+      return {
+        id: u.id,
+        fullName: u.fullName,
+        username: u.username,
+        phone: u.phone || '',
+        workspaceId: u.workspaceId,
+        className: ws?.className || '',
+        churchName: ws?.churchName || '',
+        status: u.status,
+      };
+    });
+}
+
 function normalizeLegacyChannels(state: DatabaseState): void {
+  const nowIso = new Date().toISOString();
+  let broadcastChannel = state.chatChannels.find((c) => c.id === 'global_leaders');
+  if (!broadcastChannel) {
+    broadcastChannel = {
+      id: 'global_leaders',
+      type: 'group',
+      title: 'إشعارات وتنبيهات المنصة',
+      isBroadcast: true,
+      isCustomGroup: false,
+      lastMessage: 'هذه القناة مخصصة لإشعارات وتنبيهات إدارة المنصة فقط.',
+      lastMessageAt: nowIso,
+    };
+    state.chatChannels.unshift(broadcastChannel);
+    state.chatMessages.global_leaders = state.chatMessages.global_leaders || [
+      {
+        id: 'msg_welcome_global',
+        channelId: 'global_leaders',
+        senderId: 'owner_root',
+        senderName: 'صاحب الـ Environment',
+        senderRole: 'environment_owner',
+        senderWorkspaceName: 'الإدارة المركزية للمنصة',
+        text: 'سلام ونعمة لكم جميعاً أمناء الفصول. هذه القناة مخصصة لإشعارات وتنبيهات إدارة المنصة فقط.',
+        createdAt: nowIso,
+        isSystem: true,
+      },
+    ];
+  } else {
+    broadcastChannel.type = 'group';
+    broadcastChannel.title = 'إشعارات وتنبيهات المنصة';
+    broadcastChannel.isBroadcast = true;
+    broadcastChannel.isCustomGroup = false;
+  }
+
   for (const ch of state.chatChannels) {
     if (ch.participantRole === 'applicant' && !ch.workspaceId && ch.type === 'direct') {
       ch.type = 'applicant_direct';
+    }
+    if (ch.type === 'group' && ch.id !== 'global_leaders' && ch.isBroadcast !== true) {
+      ch.isCustomGroup = true;
+      ch.isBroadcast = false;
+      if (!Array.isArray(ch.memberIds)) {
+        ch.memberIds = [];
+      }
     }
   }
   for (const wsData of Object.values(state.workspaces)) {
@@ -273,7 +343,16 @@ function canAccessChatChannel(
   channel: EnvironmentChatChannel
 ): boolean {
   if (user.role === 'environment_owner') return true;
-  if (channel.id === 'global_leaders' && user.role === 'head_servant') return true;
+  if (isBroadcastChannel(channel)) {
+    return user.role === 'head_servant';
+  }
+  if (channel.type === 'group') {
+    return (
+      user.role === 'head_servant' &&
+      Array.isArray(channel.memberIds) &&
+      channel.memberIds.includes(user.id)
+    );
+  }
   if (
     channel.type === 'workspace_internal' &&
     Boolean(user.workspaceId) &&
@@ -296,6 +375,27 @@ function broadcastChatEvent(channel: EnvironmentChatChannel, message: Environmen
   for (const client of sseClients) {
     if (canAccessChatChannel({ id: client.userId, role: client.role, workspaceId: client.workspaceId }, channel)) {
       client.res.write(`data: ${payload}\n\n`);
+    }
+  }
+}
+
+function broadcastChannelUpdated(channel: EnvironmentChatChannel, removedUserIds: string[] = []): void {
+  const updatePayload = JSON.stringify({ type: 'chat:channel_updated', channel });
+  const removePayload = JSON.stringify({ type: 'chat:channel_removed', channelId: channel.id });
+  for (const client of sseClients) {
+    if (removedUserIds.includes(client.userId)) {
+      client.res.write(`data: ${removePayload}\n\n`);
+    } else if (canAccessChatChannel({ id: client.userId, role: client.role, workspaceId: client.workspaceId }, channel)) {
+      client.res.write(`data: ${updatePayload}\n\n`);
+    }
+  }
+}
+
+function broadcastChannelDeleted(channel: EnvironmentChatChannel): void {
+  const removePayload = JSON.stringify({ type: 'chat:channel_removed', channelId: channel.id });
+  for (const client of sseClients) {
+    if (canAccessChatChannel({ id: client.userId, role: client.role, workspaceId: client.workspaceId }, channel)) {
+      client.res.write(`data: ${removePayload}\n\n`);
     }
   }
 }
@@ -1002,9 +1102,17 @@ export function createApp() {
       res.status(404).json({ error: 'مساحة الخدمة غير موجودة.' });
       return;
     }
+    const removedUserIds = new Set(
+      state.globalUsers.filter((u) => u.workspaceId === workspaceId).map((u) => u.id)
+    );
     delete state.workspaces[workspaceId];
     state.globalUsers = state.globalUsers.filter((u) => u.workspaceId !== workspaceId);
     state.chatChannels = state.chatChannels.filter((c) => c.workspaceId !== workspaceId);
+    for (const ch of state.chatChannels) {
+      if (ch.isCustomGroup && Array.isArray(ch.memberIds)) {
+        ch.memberIds = ch.memberIds.filter((id) => !removedUserIds.has(id));
+      }
+    }
     delete state.chatMessages[`ws_chat_${workspaceId}`];
     dbStore.save();
     res.json({ ok: true });
@@ -1077,7 +1185,130 @@ export function createApp() {
         return bMatch - aMatch;
       });
     }
+    if (user.role === 'environment_owner') {
+      res.json({ channels, headServants: getHeadServantsSummary(state) });
+      return;
+    }
     res.json({ channels });
+  });
+
+  app.post('/api/chat/groups', requireAuth, requireOwner, (req: AuthedRequest, res: Response) => {
+    const { title, memberIds } = req.body as { title?: string; memberIds?: unknown };
+    const cleanTitle = String(title || '').trim();
+    if (!cleanTitle || cleanTitle.length > 140) {
+      res.status(400).json({ error: 'اسم المجموعة يجب أن يكون بين 1 و 140 حرفاً.' });
+      return;
+    }
+    const state = dbStore.getState();
+    normalizeLegacyChannels(state);
+    const activeHeadIds = new Set(getHeadServantsSummary(state).map((hs) => hs.id));
+    const rawMemberIds = Array.isArray(memberIds) ? memberIds.map((id) => String(id || '').trim()) : [];
+    const validMemberIds = Array.from(new Set(rawMemberIds.filter((id) => activeHeadIds.has(id)))).slice(0, 100);
+    if (validMemberIds.length === 0) {
+      res.status(400).json({ error: 'يرجى اختيار أمين فصل واحد على الأقل للمجموعة.' });
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const groupId = sanitizeId('grp');
+    const introText = `تم إنشاء مجموعة «${cleanTitle}» بواسطة إدارة المنصة (${validMemberIds.length} أعضاء).`;
+    const newGroup: EnvironmentChatChannel = {
+      id: groupId,
+      type: 'group',
+      title: cleanTitle,
+      isBroadcast: false,
+      isCustomGroup: true,
+      memberIds: validMemberIds,
+      createdBy: req.session!.sub,
+      createdAt: nowIso,
+      lastMessage: introText,
+      lastMessageAt: nowIso,
+    };
+    const systemMsg: EnvironmentChatMessage = {
+      id: sanitizeId('msg'),
+      channelId: groupId,
+      senderId: req.session!.sub,
+      senderName: 'صاحب الـ Environment',
+      senderRole: 'environment_owner',
+      senderWorkspaceName: 'الإدارة المركزية للمنصة',
+      text: introText,
+      createdAt: nowIso,
+      isSystem: true,
+    };
+
+    state.chatChannels.unshift(newGroup);
+    state.chatMessages[groupId] = [systemMsg];
+    dbStore.save();
+
+    broadcastChatEvent(newGroup, systemMsg);
+    res.status(201).json({ channel: newGroup });
+  });
+
+  app.patch('/api/chat/groups/:channelId', requireAuth, requireOwner, (req: AuthedRequest, res: Response) => {
+    const channelId = String(req.params.channelId || '');
+    const state = dbStore.getState();
+    normalizeLegacyChannels(state);
+    const channel = state.chatChannels.find((c) => c.id === channelId);
+    if (!channel) {
+      res.status(404).json({ error: 'المجموعة غير موجودة.' });
+      return;
+    }
+    if (channel.type !== 'group' || !channel.isCustomGroup || isBroadcastChannel(channel)) {
+      res.status(403).json({ error: 'لا يمكن تعديل عضوية أو إعدادات القناة العامة من هنا.' });
+      return;
+    }
+
+    const { title, memberIds } = req.body as { title?: string; memberIds?: unknown };
+    if (title !== undefined) {
+      const cleanTitle = String(title || '').trim();
+      if (!cleanTitle || cleanTitle.length > 140) {
+        res.status(400).json({ error: 'اسم المجموعة يجب أن يكون بين 1 و 140 حرفاً.' });
+        return;
+      }
+      channel.title = cleanTitle;
+    }
+
+    const previousMemberIds = Array.isArray(channel.memberIds) ? [...channel.memberIds] : [];
+    let removedUserIds: string[] = [];
+    if (memberIds !== undefined) {
+      if (!Array.isArray(memberIds)) {
+        res.status(400).json({ error: 'قائمة الأعضاء غير صالحة.' });
+        return;
+      }
+      const activeHeadIds = new Set(getHeadServantsSummary(state).map((hs) => hs.id));
+      const validMemberIds = Array.from(
+        new Set(memberIds.map((id) => String(id || '').trim()).filter((id) => activeHeadIds.has(id)))
+      ).slice(0, 100);
+      channel.memberIds = validMemberIds;
+      removedUserIds = previousMemberIds.filter((id) => !validMemberIds.includes(id));
+    }
+
+    dbStore.save();
+    broadcastChannelUpdated(channel, removedUserIds);
+    res.json({ channel });
+  });
+
+  app.delete('/api/chat/groups/:channelId', requireAuth, requireOwner, (req: AuthedRequest, res: Response) => {
+    const channelId = String(req.params.channelId || '');
+    const state = dbStore.getState();
+    normalizeLegacyChannels(state);
+    const idx = state.chatChannels.findIndex((c) => c.id === channelId);
+    if (idx === -1) {
+      res.status(404).json({ error: 'المجموعة غير موجودة.' });
+      return;
+    }
+    const channel = state.chatChannels[idx];
+    if (channel.type !== 'group' || !channel.isCustomGroup || isBroadcastChannel(channel)) {
+      res.status(403).json({ error: 'لا يمكن حذف قناة الإشعارات العامة للمنصة.' });
+      return;
+    }
+
+    state.chatChannels.splice(idx, 1);
+    delete state.chatMessages[channelId];
+    dbStore.save();
+
+    broadcastChannelDeleted(channel);
+    res.json({ ok: true, deletedId: channelId });
   });
 
   app.get('/api/chat/channels/:channelId/messages', requireAuth, (req: AuthedRequest, res: Response) => {
@@ -1137,6 +1368,10 @@ export function createApp() {
 
     if (!actorInfo || !canAccessChatChannel(actorInfo, channel)) {
       res.status(403).json({ error: 'غير مصرح بالإرسال في هذه المحادثة.' });
+      return;
+    }
+    if (isBroadcastChannel(channel) && actorInfo.role !== 'environment_owner') {
+      res.status(403).json({ error: 'هذه القناة مخصصة لإشعارات وتنبيهات إدارة المنصة فقط.' });
       return;
     }
     const wsName = actorInfo.workspaceId
