@@ -21,6 +21,7 @@ import {
   buildWhatsAppUrl,
   exportAttendanceToExcel,
   formatArabicDate,
+  getWorkspaceStageNames,
   resolveLogoUrl,
 } from '../../utils/api';
 
@@ -41,6 +42,7 @@ export const ServantDashboard: React.FC<ServantDashboardProps> = ({
   onRefresh,
 }) => {
   const { workspace, students, announcements } = bundle;
+  const stageNames = useMemo(() => getWorkspaceStageNames(workspace), [workspace]);
   const isAdmin =
     currentUser.role === 'environment_owner' ||
     currentUser.role === 'head_servant' ||
@@ -116,12 +118,12 @@ export const ServantDashboard: React.FC<ServantDashboardProps> = ({
 
   const stageCounts = useMemo(() => {
     const map = new Map<string, number>();
-    for (const g of workspace.grades) map.set(g, 0);
+    for (const g of stageNames) map.set(g, 0);
     for (const s of students) {
       map.set(s.grade, (map.get(s.grade) || 0) + 1);
     }
     return Array.from(map.entries());
-  }, [students, workspace.grades]);
+  }, [students, stageNames]);
 
   const openAttendanceModal = () => {
     const initial: Record<string, 'present' | 'absent'> = {};
@@ -497,7 +499,7 @@ export const ServantDashboard: React.FC<ServantDashboardProps> = ({
                   className="bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3 py-2 text-sm"
                 >
                   <option value="all">كل المراحل</option>
-                  {workspace.grades.map((g) => (
+                  {stageNames.map((g) => (
                     <option key={g} value={g}>{g}</option>
                   ))}
                 </select>
@@ -644,7 +646,7 @@ export const ServantDashboard: React.FC<ServantDashboardProps> = ({
                 className="w-full bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3.5 py-2.5 text-sm"
               >
                 <option value="all">جميع المراحل</option>
-                {workspace.grades.map((g) => (
+                {stageNames.map((g) => (
                   <option key={g} value={g}>{g}</option>
                 ))}
               </select>

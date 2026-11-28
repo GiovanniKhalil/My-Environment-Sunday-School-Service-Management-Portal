@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express, { type NextFunction, type Request, type Response } from 'express';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -7,10 +8,10 @@ import {
   dbStore,
   hashPassword,
   sanitizeId,
-  signSessionToken,
   toSessionUser,
   verifyPassword,
   verifySessionToken,
+  type DatabaseState,
   type StoredUserRecord,
   type TokenPayload,
 } from './server/dbStore.js';
@@ -21,12 +22,16 @@ import type {
   EnvironmentChatMessage,
   MonthlySchedule,
   Servant,
+  ServiceSegmentDetailsMap,
+  ServiceSegments,
+  StageLessonPlan,
   Student,
   UserRole,
   VisitationRecord,
   VisitationStatus,
   Workspace,
   WorkspaceAccount,
+  WorkspaceStage,
 } from './src/types.js';
 
 interface AuthedRequest extends Request {
@@ -37,44 +42,275 @@ interface SseClient {
   id: string;
   userId: string;
   role: UserRole;
+  workspaceId: string;
   res: Response;
 }
 
 const sseClients: SseClient[] = [];
 
-function loadFirebaseApiKey(): string {
+function loadFirebaseConfig(): { apiKey?: string; projectId?: string } {
   try {
     const cfgPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
     if (fs.existsSync(cfgPath)) {
-      const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as { apiKey?: string };
-      return parsed.apiKey || '';
+      return JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as { apiKey?: string; projectId?: string };
     }
   } catch {
     // ignore
   }
-  return '';
+  return {};
 }
 
-function canAccessChatChannel(user: { id: string; role: UserRole }, channel: EnvironmentChatChannel): boolean {
+function loadFirebaseApiKey(): string {
+  return loadFirebaseConfig().apiKey || '';
+}
+
+function getAppSessionSecret(): string {
+  if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.trim().length >= 16) {
+    return process.env.SESSION_SECRET.trim();
+  }
+  const cfg = loadFirebaseConfig();
+  return crypto
+    .createHash('sha256')
+    .update(`el-kedma-session:${cfg.projectId || 'local'}:${cfg.apiKey || 'dev'}`)
+    .digest('hex');
+}
+
+function signAppSessionToken(payload: Omit<TokenPayload, 'exp'>, ttlSeconds = 60 * 60 * 24 * 7): string {
+  const fullPayload: TokenPayload = {
+    ...payload,
+    exp: Math.floor(Date.now() / 1000) + ttlSeconds,
+  };
+  const encoded = Buffer.from(JSON.stringify(fullPayload)).toString('base64url');
+  const sig = crypto
+    .createHmac('sha256', getAppSessionSecret())
+    .update(encoded)
+    .digest('base64url');
+  return `${encoded}.${sig}`;
+}
+
+function verifyAppSessionToken(token: string): TokenPayload | null {
+  if (!token || !token.includes('.')) return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [encoded, sig] = parts;
+  const expectedSig = crypto
+    .createHmac('sha256', getAppSessionSecret())
+    .update(encoded)
+    .digest('base64url');
+  const sigBuf = Buffer.from(sig);
+  const expectedBuf = Buffer.from(expectedSig);
+  if (sigBuf.length === expectedBuf.length && crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+    try {
+      const parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as TokenPayload;
+      if (parsed && typeof parsed.sub === 'string' && typeof parsed.exp === 'number' && parsed.exp >= Math.floor(Date.now() / 1000)) {
+        return parsed;
+      }
+    } catch {
+      return null;
+    }
+  }
+  return verifySessionToken(token);
+}
+
+async function verifyOwnerFirebaseIdToken(idToken: string): Promise<TokenPayload | null> {
+  const apiKey = loadFirebaseApiKey();
+  if (!apiKey || !idToken) return null;
+  try {
+    const resp = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(apiKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken }),
+      }
+    );
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as {
+      users?: Array<{ email?: string; emailVerified?: boolean; displayName?: string }>;
+    };
+    const fbUser = data.users?.[0];
+    const state = dbStore.getState();
+    if (!fbUser || !fbUser.emailVerified || fbUser.email?.toLowerCase() !== state.ownerEmail.toLowerCase()) {
+      return null;
+    }
+    const owner = state.globalUsers.find((u) => u.id === 'owner_root');
+    if (owner && fbUser.displayName && owner.fullName === 'صاحب الـ Environment') {
+      owner.fullName = fbUser.displayName;
+      dbStore.save();
+    }
+    return {
+      sub: owner?.id || 'owner_root',
+      role: 'environment_owner',
+      workspaceId: '',
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function formatArabicDateLabel(dateStr: string): string {
+  if (!dateStr) return '';
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr.trim());
+  const parsed = match
+    ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+    : new Date(dateStr);
+  if (Number.isNaN(parsed.getTime())) return dateStr;
+  return new Intl.DateTimeFormat('ar-EG', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  }).format(parsed);
+}
+
+function normalizeStagesPayload(
+  stagesInput: unknown,
+  gradesInput: unknown,
+  stageConfigInput: unknown,
+  fallbackName = 'المرحلة الأولى'
+): { stages: WorkspaceStage[]; grades: string[]; stageConfig: string } {
+  let stages: WorkspaceStage[] = [];
+  if (Array.isArray(stagesInput)) {
+    stages = stagesInput
+      .map((item, idx) => {
+        if (item && typeof item === 'object' && 'name' in item) {
+          const name = String((item as { name?: unknown }).name || '').trim();
+          const id = String((item as { id?: unknown }).id || '').trim() || `stg_${idx + 1}`;
+          return name ? { id, name } : null;
+        }
+        return null;
+      })
+      .filter((s): s is WorkspaceStage => Boolean(s))
+      .slice(0, 15);
+  }
+  if (stages.length === 0 && Array.isArray(gradesInput)) {
+    stages = gradesInput
+      .map((g) => String(g || '').trim())
+      .filter(Boolean)
+      .slice(0, 15)
+      .map((name, idx) => ({ id: `stg_${idx + 1}`, name }));
+  }
+  if (stages.length === 0 && typeof stageConfigInput === 'string' && stageConfigInput.trim()) {
+    stages = stageConfigInput
+      .split(/[،,/]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 15)
+      .map((name, idx) => ({ id: `stg_${idx + 1}`, name }));
+  }
+  if (stages.length === 0) {
+    stages = [{ id: 'stg_1', name: fallbackName.trim() || 'المرحلة الأولى' }];
+  }
+  const grades = stages.map((s) => s.name);
+  const stageConfig = grades.join('، ');
+  return { stages, grades, stageConfig };
+}
+
+function ensureWorkspaceChatChannel(ws: Workspace, state: DatabaseState): EnvironmentChatChannel {
+  const channelId = `ws_chat_${ws.id}`;
+  let ch = state.chatChannels.find((c) => c.id === channelId);
+  const nowIso = new Date().toISOString();
+  if (!ch) {
+    const welcomeText = `أهلاً بكم في شات فريق خدمة «${ws.className}». هذه القناة مخصصة للتنسيق الداخلي بين أمين الفصل والأمين المساعد وخدام الفصل.`;
+    ch = {
+      id: channelId,
+      type: 'workspace_internal',
+      title: `شات فريق خدمة ${ws.className}`,
+      workspaceId: ws.id,
+      churchName: ws.churchName,
+      className: ws.className,
+      lastMessage: welcomeText,
+      lastMessageAt: nowIso,
+    };
+    state.chatChannels.push(ch);
+    state.chatMessages[channelId] = state.chatMessages[channelId] || [
+      {
+        id: sanitizeId('msg'),
+        channelId,
+        senderId: 'owner_root',
+        senderName: 'النظام الداخلي للفصل',
+        senderRole: 'head_servant',
+        senderWorkspaceName: ws.className,
+        text: welcomeText,
+        createdAt: nowIso,
+        isSystem: true,
+      },
+    ];
+  } else {
+    ch.type = 'workspace_internal';
+    ch.title = `شات فريق خدمة ${ws.className}`;
+    ch.churchName = ws.churchName;
+    ch.className = ws.className;
+  }
+  return ch;
+}
+
+function normalizeWorkspaceAndChannels(ws: Workspace, state: DatabaseState): Workspace {
+  if (!Array.isArray(ws.stages) || ws.stages.length === 0) {
+    const normalized = normalizeStagesPayload(undefined, ws.grades, ws.stageConfig, ws.className);
+    ws.stages = normalized.stages;
+    ws.grades = normalized.grades;
+    if (!ws.stageConfig) ws.stageConfig = normalized.stageConfig;
+  }
+  ensureWorkspaceChatChannel(ws, state);
+  return ws;
+}
+
+function normalizeLegacyChannels(state: DatabaseState): void {
+  for (const ch of state.chatChannels) {
+    if (ch.participantRole === 'applicant' && !ch.workspaceId && ch.type === 'direct') {
+      ch.type = 'applicant_direct';
+    }
+  }
+  for (const wsData of Object.values(state.workspaces)) {
+    normalizeWorkspaceAndChannels(wsData.workspace, state);
+  }
+}
+
+function canAccessChatChannel(
+  user: { id: string; role: UserRole; workspaceId?: string },
+  channel: EnvironmentChatChannel
+): boolean {
   if (user.role === 'environment_owner') return true;
   if (channel.id === 'global_leaders' && user.role === 'head_servant') return true;
-  if (channel.type === 'direct' && channel.participantUserId === user.id) return true;
+  if (
+    channel.type === 'workspace_internal' &&
+    Boolean(user.workspaceId) &&
+    channel.workspaceId === user.workspaceId &&
+    (user.role === 'head_servant' || user.role === 'assistant_head' || user.role === 'servant')
+  ) {
+    return true;
+  }
+  if (
+    (channel.type === 'direct' || channel.type === 'applicant_direct') &&
+    channel.participantUserId === user.id
+  ) {
+    return true;
+  }
   return false;
 }
 
 function broadcastChatEvent(channel: EnvironmentChatChannel, message: EnvironmentChatMessage): void {
   const payload = JSON.stringify({ type: 'chat:message', channel, message });
   for (const client of sseClients) {
-    if (canAccessChatChannel({ id: client.userId, role: client.role }, channel)) {
+    if (canAccessChatChannel({ id: client.userId, role: client.role, workspaceId: client.workspaceId }, channel)) {
       client.res.write(`data: ${payload}\n\n`);
     }
   }
 }
 
-function requireAuth(req: AuthedRequest, res: Response, next: NextFunction): void {
+async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction): Promise<void> {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
-  const payload = verifySessionToken(token);
+  let payload = verifyAppSessionToken(token);
+  if (!payload) {
+    const fbIdTokenHeader = req.headers['x-firebase-id-token'];
+    const fbIdToken = typeof fbIdTokenHeader === 'string' ? fbIdTokenHeader.trim() : '';
+    if (fbIdToken) {
+      payload = await verifyOwnerFirebaseIdToken(fbIdToken);
+    }
+  }
   if (!payload) {
     res.status(401).json({ error: 'جلسة الدخول منتهية أو غير مصرح بها.' });
     return;
@@ -179,7 +415,7 @@ export function createApp() {
     state.ownerClaimed = true;
     dbStore.save();
 
-    const token = signSessionToken({ sub: owner.id, role: owner.role, workspaceId: '' });
+    const token = signAppSessionToken({ sub: owner.id, role: owner.role, workspaceId: '' });
     res.json({ token, user: toSessionUser(owner), workspace: null });
   });
 
@@ -227,7 +463,7 @@ export function createApp() {
       }
       owner.updatedAt = new Date().toISOString();
       dbStore.save();
-      const token = signSessionToken({ sub: owner.id, role: owner.role, workspaceId: '' });
+      const token = signAppSessionToken({ sub: owner.id, role: owner.role, workspaceId: '' });
       res.json({ token, user: toSessionUser(owner), workspace: null });
     } catch {
       res.status(500).json({ error: 'حدث خطأ أثناء التحقق من Google.' });
@@ -272,7 +508,7 @@ export function createApp() {
       workspace = ws;
     }
 
-    const token = signSessionToken({
+    const token = signAppSessionToken({
       sub: user.id,
       role: user.role,
       workspaceId: user.workspaceId || '',
@@ -340,7 +576,7 @@ export function createApp() {
     const welcomeText = `مرحباً ${cleanName}. تم استلام طلب إنشاء نظام خدمة لـ «${cleanClass}» في «${cleanChurch}». يمكنك كتابة تفاصيل فصلك هنا للتنسيق المباشر مع صاحب الـ Environment.`;
     const newChannel: EnvironmentChatChannel = {
       id: channelId,
-      type: 'direct',
+      type: 'applicant_direct',
       title: `${cleanName} — ${cleanChurch}`,
       participantUserId: userId,
       participantName: cleanName,
@@ -367,7 +603,7 @@ export function createApp() {
     state.chatMessages[channelId] = [welcomeMsg];
     dbStore.save();
 
-    const token = signSessionToken({ sub: userId, role: 'applicant', workspaceId: '' });
+    const token = signAppSessionToken({ sub: userId, role: 'applicant', workspaceId: '' });
     res.status(201).json({ token, user: toSessionUser(newApplicant), workspace: null });
   });
 
@@ -459,6 +695,7 @@ export function createApp() {
   // --- Environment Owner Console Endpoints ---
   app.get('/api/owner/overview', requireAuth, requireOwner, (_req: AuthedRequest, res: Response) => {
     const state = dbStore.getState();
+    normalizeLegacyChannels(state);
     const workspaces = Object.values(state.workspaces).map((w) => w.workspace);
     const applicants = state.globalUsers
       .filter((u) => u.role === 'applicant' || Boolean(u.proposedClassName))
@@ -476,6 +713,7 @@ export function createApp() {
       className,
       stageConfig,
       grades,
+      stages,
       logoUrl,
       verse,
       headFullName,
@@ -488,6 +726,7 @@ export function createApp() {
       className?: string;
       stageConfig?: string;
       grades?: string[];
+      stages?: WorkspaceStage[];
       logoUrl?: string;
       verse?: string;
       headFullName?: string;
@@ -523,16 +762,9 @@ export function createApp() {
     const nowIso = new Date().toISOString();
     const workspaceId = sanitizeId('ws');
     const headServantId = sanitizeId('srv');
-    const parsedGrades =
-      Array.isArray(grades) && grades.length > 0
-        ? grades.map((g) => String(g).trim()).filter(Boolean)
-        : (stageConfig || cleanClass)
-            .split(/[،,/]+/)
-            .map((s) => s.trim())
-            .filter(Boolean);
-
-    const effectiveGrades = parsedGrades.length > 0 ? parsedGrades : [cleanClass];
-    const cleanStage = (stageConfig || effectiveGrades.join('، ')).trim();
+    const normalizedStages = normalizeStagesPayload(stages, grades, stageConfig, cleanClass);
+    const effectiveGrades = normalizedStages.grades;
+    const cleanStage = normalizedStages.stageConfig;
     const cleanVerse =
       (verse || '').trim() ||
       '«اخْدِمُوا الرَّبَّ بِفَرَحٍ، ادْخُلُوا إِلَى حَضْرَتِهِ بِتَرَنُّمٍ» (مز ١٠٠: ٢)';
@@ -543,6 +775,7 @@ export function createApp() {
       className: cleanClass,
       stageConfig: cleanStage,
       grades: effectiveGrades,
+      stages: normalizedStages.stages,
       logoUrl: logoUrl || '/src/assets/images/coptic_platform_emblem_1795619749170.jpg',
       verse: cleanVerse,
       status: 'active',
@@ -604,6 +837,7 @@ export function createApp() {
 
       const existingChannel = state.chatChannels.find((c) => c.participantUserId === existingApplicant.id);
       if (existingChannel) {
+        existingChannel.type = 'direct';
         existingChannel.title = `${cleanHeadName} — ${cleanChurch}`;
         existingChannel.participantRole = 'head_servant';
         existingChannel.workspaceId = workspaceId;
@@ -671,17 +905,33 @@ export function createApp() {
       ];
     }
 
+    ensureWorkspaceChatChannel(newWorkspace, state);
+
+    const schDate = new Date(Date.now() + ((7 - new Date().getDay()) % 7) * 86400000).toISOString().slice(0, 10);
+    const defaultStageLessons: StageLessonPlan[] = normalizedStages.stages.map((stg) => ({
+      stageId: stg.id,
+      stageName: stg.name,
+      lessonTitle: 'لقاء الافتتاح والتعارف الروحي',
+      memoryVerse: cleanVerse,
+      primaryTeacherId: headServantId,
+      primaryTeacherName: cleanHeadName,
+      backupTeacherId: '',
+      backupTeacherName: '-- بدون خادم احتياطي --',
+    }));
+
     const defaultSchedule: MonthlySchedule = {
       id: sanitizeId('sch'),
       workspaceId,
-      date: new Date(Date.now() + ((7 - new Date().getDay()) % 7) * 86400000).toISOString().slice(0, 10),
+      date: schDate,
+      dateLabel: formatArabicDateLabel(schDate),
       grade: effectiveGrades[0],
       lessonTitle: 'لقاء الافتتاح والتعارف الروحي',
       memoryVerse: cleanVerse,
       primaryTeacherId: headServantId,
       primaryTeacherName: cleanHeadName,
-      backupTeacherId: headServantId,
-      backupTeacherName: cleanHeadName,
+      backupTeacherId: '',
+      backupTeacherName: '-- بدون خادم احتياطي --',
+      stageLessons: defaultStageLessons,
       segments: {
         openingPrayer: true,
         hymns: true,
@@ -755,6 +1005,7 @@ export function createApp() {
     delete state.workspaces[workspaceId];
     state.globalUsers = state.globalUsers.filter((u) => u.workspaceId !== workspaceId);
     state.chatChannels = state.chatChannels.filter((c) => c.workspaceId !== workspaceId);
+    delete state.chatMessages[`ws_chat_${workspaceId}`];
     dbStore.save();
     res.json({ ok: true });
   });
@@ -775,10 +1026,14 @@ export function createApp() {
     res.json({ applicant: toSessionUser(applicant) });
   });
 
-  // --- Real-Time Leadership & Applicant Chat ---
-  app.get('/api/chat/stream', (req: Request, res: Response) => {
+  // --- Real-Time Leadership, Workspace Team & Applicant Chat ---
+  app.get('/api/chat/stream', async (req: Request, res: Response) => {
     const token = String(req.query.token || '').trim();
-    const payload = verifySessionToken(token);
+    const idToken = String(req.query.idToken || '').trim();
+    let payload = verifyAppSessionToken(token);
+    if (!payload && idToken) {
+      payload = await verifyOwnerFirebaseIdToken(idToken);
+    }
     if (!payload) {
       res.status(401).end();
       return;
@@ -789,7 +1044,13 @@ export function createApp() {
     res.flushHeaders();
 
     const clientId = sanitizeId('sse');
-    const client: SseClient = { id: clientId, userId: payload.sub, role: payload.role, res };
+    const client: SseClient = {
+      id: clientId,
+      userId: payload.sub,
+      role: payload.role,
+      workspaceId: payload.workspaceId || '',
+      res,
+    };
     sseClients.push(client);
     res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
 
@@ -801,20 +1062,39 @@ export function createApp() {
 
   app.get('/api/chat/channels', requireAuth, (req: AuthedRequest, res: Response) => {
     const state = dbStore.getState();
-    const user = { id: req.session!.sub, role: req.session!.role };
-    const channels = state.chatChannels.filter((ch) => canAccessChatChannel(user, ch));
+    normalizeLegacyChannels(state);
+    const requestedWorkspaceId = typeof req.query.workspaceId === 'string' ? req.query.workspaceId.trim() : '';
+    const user = {
+      id: req.session!.sub,
+      role: req.session!.role,
+      workspaceId: req.session!.workspaceId || '',
+    };
+    let channels = state.chatChannels.filter((ch) => canAccessChatChannel(user, ch));
+    if (requestedWorkspaceId) {
+      channels = [...channels].sort((a, b) => {
+        const aMatch = a.workspaceId === requestedWorkspaceId ? 1 : 0;
+        const bMatch = b.workspaceId === requestedWorkspaceId ? 1 : 0;
+        return bMatch - aMatch;
+      });
+    }
     res.json({ channels });
   });
 
   app.get('/api/chat/channels/:channelId/messages', requireAuth, (req: AuthedRequest, res: Response) => {
     const channelId = String(req.params.channelId || '');
     const state = dbStore.getState();
+    normalizeLegacyChannels(state);
     const channel = state.chatChannels.find((c) => c.id === channelId);
     if (!channel) {
       res.status(404).json({ error: 'قناة المحادثة غير موجودة.' });
       return;
     }
-    if (!canAccessChatChannel({ id: req.session!.sub, role: req.session!.role }, channel)) {
+    if (
+      !canAccessChatChannel(
+        { id: req.session!.sub, role: req.session!.role, workspaceId: req.session!.workspaceId },
+        channel
+      )
+    ) {
       res.status(403).json({ error: 'غير مصرح بالوصول إلى هذه المحادثة.' });
       return;
     }
@@ -830,26 +1110,45 @@ export function createApp() {
       return;
     }
     const state = dbStore.getState();
+    normalizeLegacyChannels(state);
     const channel = state.chatChannels.find((c) => c.id === channelId);
     if (!channel) {
       res.status(404).json({ error: 'قناة المحادثة غير موجودة.' });
       return;
     }
-    const user = dbStore.findUserById(req.session!.sub);
-    if (!user || !canAccessChatChannel({ id: user.id, role: user.role }, channel)) {
+    const storedUser = dbStore.findUserById(req.session!.sub);
+    const actorInfo = storedUser
+      ? {
+          id: storedUser.id,
+          role: storedUser.role,
+          workspaceId: storedUser.workspaceId,
+          fullName: storedUser.fullName,
+          proposedClassName: storedUser.proposedClassName,
+        }
+      : req.session!.role === 'environment_owner'
+      ? {
+          id: req.session!.sub,
+          role: 'environment_owner' as UserRole,
+          workspaceId: '',
+          fullName: 'صاحب الـ Environment',
+          proposedClassName: undefined,
+        }
+      : null;
+
+    if (!actorInfo || !canAccessChatChannel(actorInfo, channel)) {
       res.status(403).json({ error: 'غير مصرح بالإرسال في هذه المحادثة.' });
       return;
     }
-    const wsName = user.workspaceId
-      ? state.workspaces[user.workspaceId]?.workspace.className
-      : user.proposedClassName || 'الإدارة المركزية للمنصة';
+    const wsName = actorInfo.workspaceId
+      ? state.workspaces[actorInfo.workspaceId]?.workspace.className
+      : actorInfo.proposedClassName || 'الإدارة المركزية للمنصة';
     const nowIso = new Date().toISOString();
     const msg: EnvironmentChatMessage = {
       id: sanitizeId('msg'),
       channelId,
-      senderId: user.id,
-      senderName: user.fullName,
-      senderRole: user.role,
+      senderId: actorInfo.id,
+      senderName: actorInfo.fullName,
+      senderRole: actorInfo.role,
       senderWorkspaceName: wsName,
       text: cleanText,
       createdAt: nowIso,
@@ -872,11 +1171,13 @@ export function createApp() {
     requireWorkspaceAccess(['environment_owner', 'head_servant', 'assistant_head', 'servant', 'student']),
     (req: AuthedRequest, res: Response) => {
       const workspaceId = String(req.params.workspaceId || '');
-      const ws = dbStore.getState().workspaces[workspaceId];
+      const state = dbStore.getState();
+      const ws = state.workspaces[workspaceId];
       if (!ws) {
         res.status(404).json({ error: 'مساحة الخدمة غير موجودة.' });
         return;
       }
+      normalizeWorkspaceAndChannels(ws.workspace, state);
 
       const role = req.session!.role;
       const user = dbStore.findUserById(req.session!.sub);
@@ -922,17 +1223,26 @@ export function createApp() {
     requireWorkspaceAccess(['environment_owner', 'head_servant', 'assistant_head']),
     (req: AuthedRequest, res: Response) => {
       const workspaceId = String(req.params.workspaceId || '');
-      const ws = dbStore.getState().workspaces[workspaceId];
-      const { churchName, className, stageConfig, grades, logoUrl, verse } = req.body as Partial<Workspace>;
+      const state = dbStore.getState();
+      const ws = state.workspaces[workspaceId];
+      const { churchName, className, stageConfig, grades, stages, logoUrl, verse } = req.body as Partial<Workspace>;
       if (churchName && churchName.trim().length >= 2) ws.workspace.churchName = churchName.trim();
       if (className && className.trim().length >= 2) ws.workspace.className = className.trim();
-      if (stageConfig !== undefined) ws.workspace.stageConfig = stageConfig.trim();
-      if (Array.isArray(grades) && grades.length > 0) {
-        ws.workspace.grades = grades.map((g) => String(g).trim()).filter(Boolean);
+      if (stages !== undefined || grades !== undefined || stageConfig !== undefined) {
+        const normalized = normalizeStagesPayload(
+          stages,
+          grades ?? ws.workspace.grades,
+          stageConfig ?? ws.workspace.stageConfig,
+          ws.workspace.className
+        );
+        ws.workspace.stages = normalized.stages;
+        ws.workspace.grades = normalized.grades;
+        ws.workspace.stageConfig = normalized.stageConfig;
       }
       if (typeof logoUrl === 'string') ws.workspace.logoUrl = logoUrl;
       if (typeof verse === 'string') ws.workspace.verse = verse.trim();
       ws.workspace.updatedAt = new Date().toISOString();
+      ensureWorkspaceChatChannel(ws.workspace, state);
       dbStore.save();
       res.json({ workspace: ws.workspace });
     }
@@ -1387,32 +1697,122 @@ export function createApp() {
       if (payload.pruneExpired) {
         const cutoff = new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10);
         ws.monthlySchedules = ws.monthlySchedules.filter((s) => s.date >= cutoff);
+        if (!payload.date) {
+          dbStore.save();
+          res.json({ schedules: ws.monthlySchedules });
+          return;
+        }
       }
 
-      if (!payload.lessonTitle || !payload.date || !payload.grade) {
-        dbStore.save();
-        res.json({ schedules: ws.monthlySchedules });
+      const rawStageLessons = Array.isArray(payload.stageLessons) ? payload.stageLessons : [];
+      const normalizedStageLessons: StageLessonPlan[] = rawStageLessons.map((sl, idx) => {
+        const primary = ws.servants.find((s) => s.id === sl.primaryTeacherId);
+        const backup = ws.servants.find((s) => s.id === sl.backupTeacherId);
+        const customName = String(sl.customPrimaryTeacherName || '').trim();
+        const isCustom = sl.primaryTeacherId === '__custom__';
+        return {
+          stageId: String(sl.stageId || `stg_${idx + 1}`),
+          stageName: String(sl.stageName || ws.workspace.grades[idx] || 'المرحلة').trim(),
+          lessonTitle: String(sl.lessonTitle || '').trim(),
+          memoryVerse: String(sl.memoryVerse || '').trim(),
+          primaryTeacherId: isCustom ? '__custom__' : primary?.id || String(sl.primaryTeacherId || ''),
+          primaryTeacherName: isCustom
+            ? customName || String(sl.primaryTeacherName || 'خادم مخصص')
+            : primary?.fullName || String(sl.primaryTeacherName || 'غير محدد'),
+          ...(isCustom ? { customPrimaryTeacherName: customName } : {}),
+          backupTeacherId: backup?.id || '',
+          backupTeacherName: backup?.fullName || '-- بدون خادم احتياطي --',
+        };
+      });
+
+      const hasStageLessons = normalizedStageLessons.length > 0;
+      const firstStageWithTitle = normalizedStageLessons.find((s) => s.lessonTitle) || normalizedStageLessons[0];
+      const effectiveDate = String(payload.date || '').trim();
+      const effectiveTitle = (payload.lessonTitle || firstStageWithTitle?.lessonTitle || '').trim();
+      const effectiveGrade =
+        (payload.grade || (hasStageLessons ? normalizedStageLessons.map((s) => s.stageName).join('، ') : '')).trim() ||
+        ws.workspace.grades[0] ||
+        '';
+
+      if (!effectiveDate || (!effectiveTitle && !hasStageLessons)) {
+        res.status(400).json({ error: 'يرجى تحديد تاريخ اللقاء وكتابة موضوع الدرس لمرحلة واحدة على الأقل.' });
         return;
       }
 
+      const defaultSegments: ServiceSegments = {
+        openingPrayer: true,
+        hymns: true,
+        coptic: false,
+        rites: false,
+        behavior: true,
+        weeklyReadings: true,
+        visitationReview: true,
+      };
+
+      let normalizedSegmentDetails: ServiceSegmentDetailsMap | undefined = undefined;
+      let effectiveSegments: ServiceSegments = payload.segments ? { ...defaultSegments, ...payload.segments } : defaultSegments;
+
+      if (payload.segmentDetails && typeof payload.segmentDetails === 'object') {
+        const keys: Array<keyof ServiceSegments> = [
+          'openingPrayer',
+          'hymns',
+          'coptic',
+          'rites',
+          'behavior',
+          'weeklyReadings',
+          'visitationReview',
+        ];
+        const detailsAcc = {} as ServiceSegmentDetailsMap;
+        const boolAcc = { ...defaultSegments };
+        for (const k of keys) {
+          const item = payload.segmentDetails[k];
+          const enabled = Boolean(item?.enabled);
+          const pSrv = ws.servants.find((s) => s.id === item?.primaryServantId);
+          const bSrv = ws.servants.find((s) => s.id === item?.backupServantId);
+          detailsAcc[k] = {
+            enabled,
+            primaryServantId: pSrv?.id || '',
+            primaryServantName: pSrv?.fullName || '',
+            backupServantId: bSrv?.id || '',
+            backupServantName: bSrv?.fullName || '',
+          };
+          boolAcc[k] = enabled;
+        }
+        normalizedSegmentDetails = detailsAcc;
+        effectiveSegments = boolAcc;
+      }
+
       const nowIso = new Date().toISOString();
-      const primary = ws.servants.find((s) => s.id === payload.primaryTeacherId);
-      const backup = ws.servants.find((s) => s.id === payload.backupTeacherId);
+      const primary = ws.servants.find((s) => s.id === (firstStageWithTitle?.primaryTeacherId || payload.primaryTeacherId));
+      const backup = ws.servants.find((s) => s.id === (firstStageWithTitle?.backupTeacherId || payload.backupTeacherId));
+      const dateLabel = (payload.dateLabel || formatArabicDateLabel(effectiveDate)).trim();
+      const resolvedLessonTitle = effectiveTitle || 'برنامج الخدمة الأسبوعي';
+      const resolvedVerse = (firstStageWithTitle?.memoryVerse || payload.memoryVerse || '').trim();
+      const resolvedPrimaryId = firstStageWithTitle?.primaryTeacherId || payload.primaryTeacherId || ws.servants[0]?.id || '';
+      const resolvedPrimaryName =
+        firstStageWithTitle?.primaryTeacherName || primary?.fullName || payload.primaryTeacherName || ws.servants[0]?.fullName || 'غير محدد';
+      const resolvedBackupId = firstStageWithTitle?.backupTeacherId ?? payload.backupTeacherId ?? '';
+      const resolvedBackupName =
+        firstStageWithTitle?.backupTeacherName || backup?.fullName || payload.backupTeacherName || '-- بدون خادم احتياطي --';
 
       if (payload.id) {
         const existing = ws.monthlySchedules.find((s) => s.id === payload.id);
         if (existing) {
-          existing.date = payload.date;
-          existing.grade = payload.grade;
-          existing.lessonTitle = payload.lessonTitle.trim();
-          existing.memoryVerse = (payload.memoryVerse || '').trim();
-          existing.primaryTeacherId = payload.primaryTeacherId || existing.primaryTeacherId;
-          existing.primaryTeacherName = primary?.fullName || payload.primaryTeacherName || existing.primaryTeacherName;
-          existing.backupTeacherId = payload.backupTeacherId || existing.backupTeacherId;
-          existing.backupTeacherName = backup?.fullName || payload.backupTeacherName || existing.backupTeacherName;
-          if (payload.segments) existing.segments = payload.segments;
-          if (payload.notes !== undefined) existing.notes = payload.notes;
+          existing.date = effectiveDate;
+          existing.dateLabel = dateLabel;
+          existing.grade = effectiveGrade;
+          existing.lessonTitle = resolvedLessonTitle;
+          existing.memoryVerse = resolvedVerse;
+          existing.primaryTeacherId = resolvedPrimaryId;
+          existing.primaryTeacherName = resolvedPrimaryName;
+          existing.backupTeacherId = resolvedBackupId;
+          existing.backupTeacherName = resolvedBackupName;
+          if (hasStageLessons) existing.stageLessons = normalizedStageLessons;
+          existing.segments = effectiveSegments;
+          if (normalizedSegmentDetails) existing.segmentDetails = normalizedSegmentDetails;
+          if (payload.notes !== undefined) existing.notes = payload.notes.trim();
           existing.updatedAt = nowIso;
+          ws.monthlySchedules.sort((a, b) => a.date.localeCompare(b.date));
           dbStore.save();
           res.json({ schedule: existing, schedules: ws.monthlySchedules });
           return;
@@ -1422,23 +1822,18 @@ export function createApp() {
       const newSchedule: MonthlySchedule = {
         id: sanitizeId('sch'),
         workspaceId,
-        date: payload.date,
-        grade: payload.grade,
-        lessonTitle: payload.lessonTitle.trim(),
-        memoryVerse: (payload.memoryVerse || '').trim(),
-        primaryTeacherId: payload.primaryTeacherId || ws.servants[0]?.id || '',
-        primaryTeacherName: primary?.fullName || payload.primaryTeacherName || ws.servants[0]?.fullName || 'غير محدد',
-        backupTeacherId: payload.backupTeacherId || ws.servants[0]?.id || '',
-        backupTeacherName: backup?.fullName || payload.backupTeacherName || ws.servants[0]?.fullName || 'غير محدد',
-        segments: payload.segments || {
-          openingPrayer: true,
-          hymns: true,
-          coptic: false,
-          rites: false,
-          behavior: true,
-          weeklyReadings: true,
-          visitationReview: true,
-        },
+        date: effectiveDate,
+        dateLabel,
+        grade: effectiveGrade,
+        lessonTitle: resolvedLessonTitle,
+        memoryVerse: resolvedVerse,
+        primaryTeacherId: resolvedPrimaryId,
+        primaryTeacherName: resolvedPrimaryName,
+        backupTeacherId: resolvedBackupId,
+        backupTeacherName: resolvedBackupName,
+        ...(hasStageLessons ? { stageLessons: normalizedStageLessons } : {}),
+        segments: effectiveSegments,
+        ...(normalizedSegmentDetails ? { segmentDetails: normalizedSegmentDetails } : {}),
         notes: (payload.notes || '').trim(),
         createdAt: nowIso,
         updatedAt: nowIso,
@@ -1457,18 +1852,48 @@ export function createApp() {
     (req: AuthedRequest, res: Response) => {
       const workspaceId = String(req.params.workspaceId || '');
       const scheduleId = String(req.params.scheduleId || '');
+      const { stageIndex } = (req.body || {}) as { stageIndex?: number };
       const ws = dbStore.getState().workspaces[workspaceId];
       const sch = ws.monthlySchedules.find((s) => s.id === scheduleId);
       if (!sch) {
         res.status(404).json({ error: 'الحصة غير موجودة.' });
         return;
       }
-      const prevPrimaryId = sch.primaryTeacherId;
-      const prevPrimaryName = sch.primaryTeacherName;
-      sch.primaryTeacherId = sch.backupTeacherId;
-      sch.primaryTeacherName = sch.backupTeacherName;
-      sch.backupTeacherId = prevPrimaryId;
-      sch.backupTeacherName = prevPrimaryName;
+
+      if (Array.isArray(sch.stageLessons) && sch.stageLessons.length > 0) {
+        const targetIdx = typeof stageIndex === 'number' && sch.stageLessons[stageIndex] ? stageIndex : 0;
+        const item = sch.stageLessons[targetIdx];
+        if (!item.backupTeacherId) {
+          res.status(400).json({ error: 'لا يوجد خادم احتياطي معين لهذه المرحلة للتبديل.' });
+          return;
+        }
+        const prevId = item.primaryTeacherId;
+        const prevName = item.primaryTeacherName;
+        item.primaryTeacherId = item.backupTeacherId;
+        item.primaryTeacherName = item.backupTeacherName;
+        item.backupTeacherId = prevId === '__custom__' ? '' : prevId;
+        item.backupTeacherName = prevId === '__custom__' ? '-- بدون خادم احتياطي --' : prevName;
+        delete item.customPrimaryTeacherName;
+
+        if (targetIdx === 0) {
+          sch.primaryTeacherId = item.primaryTeacherId;
+          sch.primaryTeacherName = item.primaryTeacherName;
+          sch.backupTeacherId = item.backupTeacherId;
+          sch.backupTeacherName = item.backupTeacherName;
+        }
+      } else {
+        if (!sch.backupTeacherId) {
+          res.status(400).json({ error: 'لا يوجد خادم احتياطي معين لهذه الحصة للتبديل.' });
+          return;
+        }
+        const prevPrimaryId = sch.primaryTeacherId;
+        const prevPrimaryName = sch.primaryTeacherName;
+        sch.primaryTeacherId = sch.backupTeacherId;
+        sch.primaryTeacherName = sch.backupTeacherName;
+        sch.backupTeacherId = prevPrimaryId;
+        sch.backupTeacherName = prevPrimaryName;
+      }
+
       sch.updatedAt = new Date().toISOString();
       dbStore.save();
       res.json({ schedule: sch });

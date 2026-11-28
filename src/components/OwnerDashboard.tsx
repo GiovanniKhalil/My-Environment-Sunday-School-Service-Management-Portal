@@ -20,15 +20,18 @@ import type {
   EnvironmentChatChannel,
   SessionUser,
   Workspace,
+  WorkspaceStage,
 } from '../types';
 import {
   apiFetch,
   compressImageToDataUrl,
   DEFAULT_PLATFORM_EMBLEM,
   formatArabicDate,
+  getWorkspaceStageNames,
   resolveLogoUrl,
 } from '../utils/api';
 import { fetchFirestoreWorkspaceLogos, syncWorkspaceToFirestore } from '../firebase';
+import { StageBuilder } from './StageBuilder';
 import { UnifiedChatHub } from './UnifiedChatHub';
 
 interface OwnerDashboardProps {
@@ -57,11 +60,17 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
   const [showWizard, setShowWizard] = useState(false);
   const [creating, setCreating] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Workspace | null>(null);
+  const DEFAULT_STAGES: WorkspaceStage[] = [
+    { id: 'stg_1', name: 'أولى ابتدائي' },
+    { id: 'stg_2', name: 'تانية ابتدائي' },
+  ];
+
   const [wizardForm, setWizardForm] = useState({
     applicantId: '',
     churchName: '',
     className: '',
     stageConfig: 'أولى ابتدائي، تانية ابتدائي',
+    stages: DEFAULT_STAGES,
     logoUrl: DEFAULT_PLATFORM_EMBLEM,
     verse: '«اخْدِمُوا الرَّبَّ بِفَرَحٍ، ادْخُلُوا إِلَى حَضْرَتِهِ بِتَرَنُّمٍ» (مز ١٠٠: ٢)',
     headFullName: '',
@@ -101,6 +110,17 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
     void loadOverview();
   }, []);
 
+  const parseStagesFromConfig = (raw?: string, fallbackName?: string): WorkspaceStage[] => {
+    const parts = (raw || '')
+      .split(/[،,/]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (parts.length > 0) {
+      return parts.map((name, idx) => ({ id: `stg_${idx + 1}`, name }));
+    }
+    return [{ id: 'stg_1', name: fallbackName?.trim() || 'المرحلة الأولى' }];
+  };
+
   const openBlankWizard = () => {
     setError('');
     setWizardForm({
@@ -108,6 +128,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
       churchName: '',
       className: '',
       stageConfig: 'أولى ابتدائي، تانية ابتدائي',
+      stages: DEFAULT_STAGES,
       logoUrl: DEFAULT_PLATFORM_EMBLEM,
       verse: '«اخْدِمُوا الرَّبَّ بِفَرَحٍ، ادْخُلُوا إِلَى حَضْرَتِهِ بِتَرَنُّمٍ» (مز ١٠٠: ٢)',
       headFullName: '',
@@ -120,11 +141,16 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
 
   const openWizardFromApplicant = (applicant: SessionUser) => {
     setError('');
+    const parsedStages = parseStagesFromConfig(
+      applicant.proposedStageConfig,
+      applicant.proposedClassName
+    );
     setWizardForm({
       applicantId: applicant.id,
       churchName: applicant.proposedChurchName || '',
       className: applicant.proposedClassName || '',
-      stageConfig: applicant.proposedStageConfig || 'مرحلة مخصصة',
+      stageConfig: parsedStages.map((s) => s.name).join('، '),
+      stages: parsedStages,
       logoUrl: DEFAULT_PLATFORM_EMBLEM,
       verse: '«اخْدِمُوا الرَّبَّ بِفَرَحٍ، ادْخُلُوا إِلَى حَضْرَتِهِ بِتَرَنُّمٍ» (مز ١٠٠: ٢)',
       headFullName: applicant.fullName,
@@ -141,11 +167,13 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
       openWizardFromApplicant(matchedApplicant);
       return;
     }
+    const parsedStages = parseStagesFromConfig('', channel.className);
     setWizardForm({
       applicantId: channel.participantUserId || '',
       churchName: channel.churchName || '',
       className: channel.className || '',
-      stageConfig: 'مرحلة مخصصة',
+      stageConfig: parsedStages.map((s) => s.name).join('، '),
+      stages: parsedStages,
       logoUrl: DEFAULT_PLATFORM_EMBLEM,
       verse: '«اخْدِمُوا الرَّبَّ بِفَرَحٍ، ادْخُلُوا إِلَى حَضْرَتِهِ بِتَرَنُّمٍ» (مز ١٠٠: ٢)',
       headFullName: channel.participantName || '',
@@ -172,16 +200,24 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
     setError('');
     setCreating(true);
     try {
-      const grades = wizardForm.stageConfig
-        .split(/[،,/]+/)
-        .map((s) => s.trim())
-        .filter(Boolean);
+      const validStages = wizardForm.stages
+        .map((s, idx) => ({ id: s.id || `stg_${idx + 1}`, name: s.name.trim() }))
+        .filter((s) => s.name.length > 0);
+      if (validStages.length === 0) {
+        setError('يرجى إضافة مرحلة دراسية واحدة على الأقل.');
+        setCreating(false);
+        return;
+      }
+      const grades = validStages.map((s) => s.name);
+      const stageConfig = grades.join('، ');
 
       const res = await apiFetch<{ workspace: Workspace }>('/api/owner/workspaces', {
         method: 'POST',
         body: JSON.stringify({
           ...wizardForm,
+          stages: validStages,
           grades,
+          stageConfig,
         }),
       });
       await syncWorkspaceToFirestore(res.workspace).catch(() => {});
@@ -295,7 +331,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                   : 'text-[#755953] hover:text-[#2C1813]'
               }`}
             >
-              شات أمناء الفصول
+              مركز التواصل والشات
             </button>
           </nav>
 
@@ -346,7 +382,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
               activeTab === 'chat' ? 'bg-[#7A1523] text-white' : 'text-[#755953]'
             }`}
           >
-            شات أمناء الفصول
+            التواصل والشات
           </button>
         </div>
       </header>
@@ -485,8 +521,10 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                           <span className="font-bold text-[#2C1813]">{ws.headServantName}</span>
                         </div>
                         <div className="flex items-center justify-between">
-                          <span>المراحل:</span>
-                          <span className="truncate max-w-[170px]">{ws.stageConfig}</span>
+                          <span>المراحل ({getWorkspaceStageNames(ws).length}):</span>
+                          <span className="truncate max-w-[180px]">
+                            {getWorkspaceStageNames(ws).join('، ')}
+                          </span>
                         </div>
                         <div className="flex items-center justify-between">
                           <span>الإحصائيات:</span>
@@ -637,10 +675,10 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
           <section className="space-y-4">
             <div>
               <h1 className="text-xl font-extrabold text-[#2C1813]">
-                مركز التواصل وشات أمناء الفصول
+                مركز التواصل والشات المتكامل
               </h1>
               <p className="text-xs text-[#755953] mt-0.5">
-                قناة جماعية تجمع كافة أمناء الفصول بالإضافة لمحادثات مباشرة مع كل أمين فصل أو متقدم جديد
+                تنقل بين شات أمناء الفصول، المحادثات الخاصة مع الإدارة، طلبات التأسيس الجديدة، والشات الداخلي لكل فصل
               </p>
             </div>
             <UnifiedChatHub
@@ -721,19 +759,16 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold mb-1">
-                  المراحل / الصفوف (افصل بينها بفاصلة)
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={wizardForm.stageConfig}
-                  onChange={(e) => setWizardForm({ ...wizardForm, stageConfig: e.target.value })}
-                  placeholder="أولى ابتدائي، تانية ابتدائي"
-                  className="w-full bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3.5 py-2.5 text-sm focus:border-[#7A1523] focus:outline-none"
-                />
-              </div>
+              <StageBuilder
+                stages={wizardForm.stages}
+                onChange={(nextStages) =>
+                  setWizardForm((prev) => ({
+                    ...prev,
+                    stages: nextStages,
+                    stageConfig: nextStages.map((s) => s.name).join('، '),
+                  }))
+                }
+              />
 
               <div>
                 <label className="block text-xs font-bold mb-1">شعار أو آية الفصل</label>

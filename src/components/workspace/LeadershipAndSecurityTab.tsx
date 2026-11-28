@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Check,
   KeyRound,
@@ -17,6 +17,7 @@ import type {
   SessionUser,
   Workspace,
   WorkspaceBundle,
+  WorkspaceStage,
 } from '../../types';
 import {
   apiFetch,
@@ -24,9 +25,12 @@ import {
   compressImageToDataUrl,
   DEFAULT_PLATFORM_EMBLEM,
   formatArabicDate,
+  getWorkspaceStageNames,
+  getWorkspaceStages,
   resolveLogoUrl,
 } from '../../utils/api';
 import { syncWorkspaceBrandingToFirestore } from '../../firebase';
+import { StageBuilder } from '../StageBuilder';
 import { UnifiedChatHub } from '../UnifiedChatHub';
 
 interface LeadershipAndSecurityTabProps {
@@ -48,12 +52,12 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
   onRefresh,
 }) => {
   const { workspace, servants, accounts, changeRequests, servantLogs } = bundle;
+  const stageNames = useMemo(() => getWorkspaceStageNames(workspace), [workspace]);
   const isAdmin =
     currentUser.role === 'environment_owner' ||
     currentUser.role === 'head_servant' ||
     currentUser.role === 'assistant_head';
-  const canAccessLeaderChat =
-    currentUser.role === 'head_servant' || currentUser.role === 'environment_owner';
+  const canAccessChat = currentUser.role !== 'student';
 
   const [subTab, setSubTab] = useState<'servants' | 'approvals' | 'security' | 'branding' | 'chat'>('servants');
   const [showAddServant, setShowAddServant] = useState(false);
@@ -67,16 +71,22 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
     fullName: '',
     role: 'servant' as 'servant' | 'assistant_head',
     phone: '',
-    assignedGrade: workspace.grades[0] || '',
+    assignedGrade: stageNames[0] || '',
     username: '',
     tempPassword: '',
     bio: '',
   });
 
-  const [brandingForm, setBrandingForm] = useState({
+  const [brandingForm, setBrandingForm] = useState<{
+    churchName: string;
+    className: string;
+    stages: WorkspaceStage[];
+    verse: string;
+    logoUrl: string;
+  }>({
     churchName: workspace.churchName,
     className: workspace.className,
-    stageConfig: workspace.grades.join('، '),
+    stages: getWorkspaceStages(workspace),
     verse: workspace.verse,
     logoUrl: resolveLogoUrl(workspace.logoUrl),
   });
@@ -85,11 +95,19 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
     setBrandingForm({
       churchName: workspace.churchName,
       className: workspace.className,
-      stageConfig: workspace.grades.join('، '),
+      stages: getWorkspaceStages(workspace),
       verse: workspace.verse,
       logoUrl: resolveLogoUrl(workspace.logoUrl),
     });
   }, [workspace]);
+
+  useEffect(() => {
+    setNewServantForm((prev) =>
+      stageNames.includes(prev.assignedGrade)
+        ? prev
+        : { ...prev, assignedGrade: stageNames[0] || '' }
+    );
+  }, [stageNames]);
 
   const handleAddServant = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -104,7 +122,7 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
         fullName: '',
         role: 'servant',
         phone: '',
-        assignedGrade: workspace.grades[0] || '',
+        assignedGrade: stageNames[0] || '',
         username: '',
         tempPassword: '',
         bio: '',
@@ -161,23 +179,29 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
     e.preventDefault();
     setError('');
     try {
-      const grades = brandingForm.stageConfig
-        .split(/[،,/]+/)
-        .map((g) => g.trim())
-        .filter(Boolean);
+      const validStages = brandingForm.stages
+        .map((s, idx) => ({ id: s.id || `stg_${idx + 1}`, name: s.name.trim() }))
+        .filter((s) => s.name.length > 0);
+      if (validStages.length === 0) {
+        setError('يرجى الإبقاء على مرحلة دراسية واحدة على الأقل.');
+        return;
+      }
+      const grades = validStages.map((s) => s.name);
+      const stageConfig = grades.join('، ');
       const res = await apiFetch<{ workspace: Workspace }>(`/api/workspaces/${workspace.id}/settings`, {
         method: 'PATCH',
         body: JSON.stringify({
           churchName: brandingForm.churchName,
           className: brandingForm.className,
-          stageConfig: brandingForm.stageConfig,
+          stageConfig,
           grades,
+          stages: validStages,
           verse: brandingForm.verse,
           logoUrl: brandingForm.logoUrl,
         }),
       });
       await syncWorkspaceBrandingToFirestore(res.workspace).catch(() => {});
-      setFeedback('تم تحديث هوية وشعار الفصل وحفظهما سحابياً بنجاح.');
+      setFeedback('تم تحديث هوية وشعار ومراحل الفصل وحفظها سحابياً بنجاح.');
       await onRefresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'تعذر تحديث الإعدادات.');
@@ -259,7 +283,7 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
             </button>
           </>
         )}
-        {canAccessLeaderChat && (
+        {canAccessChat && (
           <button
             type="button"
             onClick={() => setSubTab('chat')}
@@ -268,7 +292,7 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
             }`}
           >
             <MessageSquare className="w-3.5 h-3.5" />
-            شات أمناء الفصول
+            التواصل والشات
           </button>
         )}
       </div>
@@ -565,16 +589,12 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
                 className="w-full bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3.5 py-2.5 text-sm"
               />
             </div>
-            <div>
-              <label className="block text-xs font-bold mb-1">المراحل الدراسية (مفصولة بفاصلة)</label>
-              <input
-                type="text"
-                required
-                value={brandingForm.stageConfig}
-                onChange={(e) => setBrandingForm({ ...brandingForm, stageConfig: e.target.value })}
-                className="w-full bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3.5 py-2.5 text-sm"
-              />
-            </div>
+            <StageBuilder
+              stages={brandingForm.stages}
+              onChange={(nextStages) =>
+                setBrandingForm((prev) => ({ ...prev, stages: nextStages }))
+              }
+            />
             <div>
               <label className="block text-xs font-bold mb-1">آية وشعار الفصل</label>
               <input
@@ -594,9 +614,9 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
         </section>
       )}
 
-      {/* Subtab: Environment Leadership Chat (Head Servant & Owner) */}
-      {subTab === 'chat' && canAccessLeaderChat && (
-        <UnifiedChatHub currentUser={currentUser} />
+      {/* Subtab: Workspace & Platform 4-Tier Chat */}
+      {subTab === 'chat' && canAccessChat && (
+        <UnifiedChatHub currentUser={currentUser} workspaceId={workspace.id} />
       )}
 
       {/* Add Servant Modal */}
@@ -634,7 +654,7 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
                   onChange={(e) => setNewServantForm({ ...newServantForm, assignedGrade: e.target.value })}
                   className="bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3 py-2 text-sm"
                 >
-                  {workspace.grades.map((g) => (
+                  {stageNames.map((g) => (
                     <option key={g} value={g}>{g}</option>
                   ))}
                 </select>
@@ -703,6 +723,28 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
                 onChange={(e) => setEditingServant({ ...editingServant, phone: e.target.value })}
                 className="w-full bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3.5 py-2.5 text-sm font-mono text-left"
               />
+              {isAdmin && (
+                <div>
+                  <label className="block text-xs font-bold mb-1">المرحلة المسئول عنها</label>
+                  <select
+                    value={editingServant.assignedGrade}
+                    onChange={(e) =>
+                      setEditingServant({ ...editingServant, assignedGrade: e.target.value })
+                    }
+                    className="w-full bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3.5 py-2 text-sm"
+                  >
+                    {stageNames.map((g) => (
+                      <option key={g} value={g}>{g}</option>
+                    ))}
+                    {!stageNames.includes(editingServant.assignedGrade) &&
+                      editingServant.assignedGrade && (
+                        <option value={editingServant.assignedGrade}>
+                          {editingServant.assignedGrade}
+                        </option>
+                      )}
+                  </select>
+                </div>
+              )}
               <textarea
                 rows={3}
                 value={editingServant.bio}

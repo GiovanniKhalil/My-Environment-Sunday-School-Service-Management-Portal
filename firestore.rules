@@ -64,7 +64,7 @@ service cloud.firestore {
     function isValidWorkspace(data) {
       return data.keys().hasAll(['id', 'churchName', 'className', 'status', 'ownerUid', 'createdAt']) &&
         data.keys().hasOnly([
-          'id', 'churchName', 'className', 'stageConfig', 'grades', 'logoUrl',
+          'id', 'churchName', 'className', 'stageConfig', 'grades', 'stages', 'logoUrl',
           'verse', 'status', 'headServantId', 'headServantName', 'ownerUid',
           'studentCount', 'servantCount', 'createdAt', 'updatedAt'
         ]) &&
@@ -76,6 +76,7 @@ service cloud.firestore {
         data.createdAt is string && data.createdAt.size() <= 64 &&
         (!('stageConfig' in data) || (data.stageConfig is string && data.stageConfig.size() <= 200)) &&
         (!('grades' in data) || (data.grades is list && data.grades.size() <= 15 && (data.grades.size() == 0 || data.grades[0] is string))) &&
+        (!('stages' in data) || (data.stages is list && data.stages.size() <= 15 && (data.stages.size() == 0 || data.stages[0] is map))) &&
         (!('logoUrl' in data) || (data.logoUrl is string && data.logoUrl.size() <= 250000)) &&
         (!('verse' in data) || (data.verse is string && data.verse.size() <= 300)) &&
         (!('headServantId' in data) || (data.headServantId is string && data.headServantId.size() <= 128)) &&
@@ -141,7 +142,7 @@ service cloud.firestore {
           'churchName', 'className', 'lastMessage', 'lastMessageAt'
         ]) &&
         isValidId(data.id) &&
-        data.type in ['group', 'direct'] &&
+        data.type in ['group', 'direct', 'workspace_internal', 'applicant_direct'] &&
         data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
         (!('participantUid' in data) || (data.participantUid is string && data.participantUid.size() <= 128)) &&
         (!('participantUserId' in data) || (data.participantUserId is string && data.participantUserId.size() <= 128)) &&
@@ -223,9 +224,10 @@ service cloud.firestore {
     function isValidMonthlySchedule(data, workspaceId) {
       return data.keys().hasAll(['id', 'workspaceId', 'date', 'grade', 'lessonTitle', 'createdAt']) &&
         data.keys().hasOnly([
-          'id', 'workspaceId', 'date', 'grade', 'lessonTitle', 'memoryVerse',
+          'id', 'workspaceId', 'date', 'dateLabel', 'grade', 'lessonTitle', 'memoryVerse',
           'primaryTeacherId', 'primaryTeacherName', 'backupTeacherId',
-          'backupTeacherName', 'segments', 'notes', 'createdAt', 'updatedAt'
+          'backupTeacherName', 'stageLessons', 'segments', 'segmentDetails',
+          'notes', 'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.id) &&
         data.workspaceId == workspaceId &&
@@ -233,12 +235,15 @@ service cloud.firestore {
         data.grade is string && data.grade.size() <= 80 &&
         data.lessonTitle is string && data.lessonTitle.size() <= 200 &&
         data.createdAt is string && data.createdAt.size() <= 64 &&
+        (!('dateLabel' in data) || (data.dateLabel is string && data.dateLabel.size() <= 120)) &&
         (!('memoryVerse' in data) || (data.memoryVerse is string && data.memoryVerse.size() <= 300)) &&
         (!('primaryTeacherId' in data) || (data.primaryTeacherId is string && data.primaryTeacherId.size() <= 128)) &&
         (!('primaryTeacherName' in data) || (data.primaryTeacherName is string && data.primaryTeacherName.size() <= 120)) &&
         (!('backupTeacherId' in data) || (data.backupTeacherId is string && data.backupTeacherId.size() <= 128)) &&
         (!('backupTeacherName' in data) || (data.backupTeacherName is string && data.backupTeacherName.size() <= 120)) &&
+        (!('stageLessons' in data) || (data.stageLessons is list && data.stageLessons.size() <= 15 && (data.stageLessons.size() == 0 || data.stageLessons[0] is map))) &&
         (!('segments' in data) || data.segments is map) &&
+        (!('segmentDetails' in data) || data.segmentDetails is map) &&
         (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
         (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
     }
@@ -385,7 +390,8 @@ service cloud.firestore {
       allow get: if isSignedIn() && isValidId(channelId) && (
         isEnvironmentOwner() ||
         channelId == 'global_leaders' ||
-        existing().participantUid == request.auth.uid
+        existing().participantUid == request.auth.uid ||
+        (existing().type == 'workspace_internal' && existing().workspaceId is string && isWorkspaceServantOrAbove(existing().workspaceId))
       );
       allow list: if isEnvironmentOwner() || (
         isSignedIn() && (
@@ -395,12 +401,17 @@ service cloud.firestore {
       );
       allow create: if isSignedIn() && isValidId(channelId) && isValidChatChannel(incoming()) && (
         isEnvironmentOwner() ||
-        (incoming().type == 'direct' && incoming().participantUid == request.auth.uid)
+        (incoming().type in ['direct', 'applicant_direct'] && incoming().participantUid == request.auth.uid) ||
+        (incoming().type == 'workspace_internal' && incoming().workspaceId is string && isWorkspaceServantOrAbove(incoming().workspaceId))
       );
       allow update: if isSignedIn() && isValidId(channelId) && isValidChatChannel(incoming()) && (
         isEnvironmentOwner() ||
         (
-          (existing().type == 'group' || existing().participantUid == request.auth.uid) &&
+          (
+            existing().type == 'group' ||
+            existing().participantUid == request.auth.uid ||
+            (existing().type == 'workspace_internal' && existing().workspaceId is string && isWorkspaceServantOrAbove(existing().workspaceId))
+          ) &&
           incoming().id == existing().id &&
           incoming().type == existing().type &&
           incoming().diff(existing()).affectedKeys().hasOnly(['lastMessage', 'lastMessageAt'])
@@ -412,13 +423,23 @@ service cloud.firestore {
         allow get: if isSignedIn() && isValidId(channelId) && isValidId(messageId) && (
           isEnvironmentOwner() ||
           channelId == 'global_leaders' ||
-          get(/databases/$(database)/documents/environmentChat/$(channelId)).data.participantUid == request.auth.uid
+          get(/databases/$(database)/documents/environmentChat/$(channelId)).data.participantUid == request.auth.uid ||
+          (
+            get(/databases/$(database)/documents/environmentChat/$(channelId)).data.type == 'workspace_internal' &&
+            get(/databases/$(database)/documents/environmentChat/$(channelId)).data.workspaceId is string &&
+            isWorkspaceServantOrAbove(get(/databases/$(database)/documents/environmentChat/$(channelId)).data.workspaceId)
+          )
         );
         allow list: if isEnvironmentOwner() || (
           isSignedIn() && (
             channelId == 'global_leaders' ||
             existing().senderUid == request.auth.uid ||
-            get(/databases/$(database)/documents/environmentChat/$(channelId)).data.participantUid == request.auth.uid
+            get(/databases/$(database)/documents/environmentChat/$(channelId)).data.participantUid == request.auth.uid ||
+            (
+              get(/databases/$(database)/documents/environmentChat/$(channelId)).data.type == 'workspace_internal' &&
+              get(/databases/$(database)/documents/environmentChat/$(channelId)).data.workspaceId is string &&
+              isWorkspaceServantOrAbove(get(/databases/$(database)/documents/environmentChat/$(channelId)).data.workspaceId)
+            )
           )
         );
         allow create: if isSignedIn() && isValidId(channelId) && isValidId(messageId) &&
@@ -426,7 +447,12 @@ service cloud.firestore {
           exists(/databases/$(database)/documents/environmentChat/$(channelId)) && (
             isEnvironmentOwner() ||
             channelId == 'global_leaders' ||
-            get(/databases/$(database)/documents/environmentChat/$(channelId)).data.participantUid == request.auth.uid
+            get(/databases/$(database)/documents/environmentChat/$(channelId)).data.participantUid == request.auth.uid ||
+            (
+              get(/databases/$(database)/documents/environmentChat/$(channelId)).data.type == 'workspace_internal' &&
+              get(/databases/$(database)/documents/environmentChat/$(channelId)).data.workspaceId is string &&
+              isWorkspaceServantOrAbove(get(/databases/$(database)/documents/environmentChat/$(channelId)).data.workspaceId)
+            )
           );
         allow update, delete: if isEnvironmentOwner() && isValidId(channelId) && isValidId(messageId);
       }
@@ -450,7 +476,7 @@ service cloud.firestore {
           incoming().createdAt == existing().createdAt &&
           incoming().status == existing().status &&
           incoming().diff(existing()).affectedKeys().hasOnly([
-            'churchName', 'className', 'stageConfig', 'grades', 'logoUrl',
+            'churchName', 'className', 'stageConfig', 'grades', 'stages', 'logoUrl',
             'verse', 'studentCount', 'servantCount', 'updatedAt'
           ])
         )
@@ -572,10 +598,10 @@ service cloud.firestore {
               incoming().workspaceId == existing().workspaceId &&
               incoming().createdAt == existing().createdAt &&
               incoming().diff(existing()).affectedKeys().hasOnly([
-                'date', 'grade', 'lessonTitle', 'memoryVerse',
+                'date', 'dateLabel', 'grade', 'lessonTitle', 'memoryVerse',
                 'primaryTeacherId', 'primaryTeacherName',
                 'backupTeacherId', 'backupTeacherName',
-                'segments', 'notes', 'updatedAt'
+                'stageLessons', 'segments', 'segmentDetails', 'notes', 'updatedAt'
               ])
             )
           );

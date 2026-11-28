@@ -12,12 +12,18 @@ export type Gender = 'ذكر' | 'أنثى';
 export type VisitationStatus = 'pending' | 'called' | 'visited' | 'no_answer' | 'special_care';
 export type AnnouncementTarget = 'all' | 'students_only' | 'servants_only';
 
+export interface WorkspaceStage {
+  id: string;
+  name: string;
+}
+
 export interface Workspace {
   id: string;
   churchName: string;
   className: string;
   stageConfig: string;
   grades: string[];
+  stages?: WorkspaceStage[];
   logoUrl: string;
   verse: string;
   status: WorkspaceStatus;
@@ -152,10 +158,33 @@ export interface ServiceSegments {
   visitationReview: boolean;
 }
 
+export interface ServiceSegmentAssignment {
+  enabled: boolean;
+  primaryServantId: string;
+  primaryServantName: string;
+  backupServantId: string;
+  backupServantName: string;
+}
+
+export type ServiceSegmentDetailsMap = Record<keyof ServiceSegments, ServiceSegmentAssignment>;
+
+export interface StageLessonPlan {
+  stageId: string;
+  stageName: string;
+  lessonTitle: string;
+  memoryVerse: string;
+  primaryTeacherId: string;
+  primaryTeacherName: string;
+  customPrimaryTeacherName?: string;
+  backupTeacherId: string;
+  backupTeacherName: string;
+}
+
 export interface MonthlySchedule {
   id: string;
   workspaceId: string;
   date: string;
+  dateLabel?: string;
   grade: string;
   lessonTitle: string;
   memoryVerse: string;
@@ -163,7 +192,9 @@ export interface MonthlySchedule {
   primaryTeacherName: string;
   backupTeacherId: string;
   backupTeacherName: string;
+  stageLessons?: StageLessonPlan[];
   segments: ServiceSegments;
+  segmentDetails?: ServiceSegmentDetailsMap;
   notes: string;
   createdAt: string;
   updatedAt: string;
@@ -223,9 +254,11 @@ export interface ServantLog {
   createdAt: string;
 }
 
+export type ChatChannelType = 'group' | 'direct' | 'workspace_internal' | 'applicant_direct';
+
 export interface EnvironmentChatChannel {
   id: string;
-  type: 'group' | 'direct';
+  type: ChatChannelType;
   title: string;
   participantUserId?: string;
   participantName?: string;

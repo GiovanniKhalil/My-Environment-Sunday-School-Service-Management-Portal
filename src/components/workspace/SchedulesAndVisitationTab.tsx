@@ -2,10 +2,12 @@ import React, { useMemo, useState } from 'react';
 import {
   AlertCircle,
   ArrowLeftRight,
+  BookOpen,
   Calendar,
   Check,
   CheckCircle2,
   Clock,
+  FileText,
   HeartHandshake,
   Home,
   MessageCircle,
@@ -15,6 +17,7 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  Sparkles,
   Trash2,
   UserCheck,
   Users,
@@ -23,13 +26,22 @@ import {
 import type {
   MonthlySchedule,
   Servant,
+  ServiceSegmentDetailsMap,
   ServiceSegments,
   SessionUser,
+  StageLessonPlan,
   VisitationRecord,
   VisitationStatus,
   WorkspaceBundle,
+  WorkspaceStage,
 } from '../../types';
-import { apiFetch, buildWhatsAppUrl } from '../../utils/api';
+import {
+  apiFetch,
+  buildWhatsAppUrl,
+  formatLiveArabicDate,
+  getWorkspaceStageNames,
+  getWorkspaceStages,
+} from '../../utils/api';
 
 interface SchedulesAndVisitationTabProps {
   bundle: WorkspaceBundle;
@@ -38,14 +50,30 @@ interface SchedulesAndVisitationTabProps {
 }
 
 const SEGMENT_LABELS: Array<{ key: keyof ServiceSegments; label: string }> = [
-  { key: 'openingPrayer', label: 'صلاة الافتتاح' },
-  { key: 'hymns', label: 'الألحان والتسبحة' },
-  { key: 'coptic', label: 'اللغة القبطية' },
-  { key: 'rites', label: 'الطقس الكنسي' },
-  { key: 'behavior', label: 'السلوكيات والمواقف' },
-  { key: 'weeklyReadings', label: 'قراءات الأسبوع' },
-  { key: 'visitationReview', label: 'مراجعة الافتقاد' },
+  { key: 'openingPrayer', label: 'صلاة البداية' },
+  { key: 'hymns', label: 'الألحان' },
+  { key: 'coptic', label: 'القبطي' },
+  { key: 'rites', label: 'الطقس' },
+  { key: 'behavior', label: 'السلوك' },
+  { key: 'weeklyReadings', label: 'مسئول قراءات الأسبوع' },
+  { key: 'visitationReview', label: 'مسئول عن مراجعة الافتقاد' },
 ];
+
+const DEFAULT_ENABLED_SEGMENTS = new Set<keyof ServiceSegments>([
+  'openingPrayer',
+  'hymns',
+  'behavior',
+  'weeklyReadings',
+  'visitationReview',
+]);
+
+interface ScheduleFormState {
+  id?: string;
+  date: string;
+  stageLessons: StageLessonPlan[];
+  segmentDetails: ServiceSegmentDetailsMap;
+  notes: string;
+}
 
 const VISITATION_STATUS_LABELS: Record<VisitationStatus, string> = {
   pending: 'في الانتظار',
@@ -84,12 +112,86 @@ function getInitials(fullName: string): string {
   return `${parts[0][0]}${parts[1][0]}`;
 }
 
+function buildDefaultSegmentDetails(existing?: MonthlySchedule): ServiceSegmentDetailsMap {
+  const result = {} as ServiceSegmentDetailsMap;
+  for (const seg of SEGMENT_LABELS) {
+    const existingDetail = existing?.segmentDetails?.[seg.key];
+    const enabled =
+      existingDetail !== undefined
+        ? Boolean(existingDetail.enabled)
+        : existing?.segments
+        ? Boolean(existing.segments[seg.key])
+        : DEFAULT_ENABLED_SEGMENTS.has(seg.key);
+    result[seg.key] = {
+      enabled,
+      primaryServantId: existingDetail?.primaryServantId || '',
+      primaryServantName: existingDetail?.primaryServantName || '',
+      backupServantId: existingDetail?.backupServantId || '',
+      backupServantName: existingDetail?.backupServantName || '',
+    };
+  }
+  return result;
+}
+
+function buildInitialStageLessons(
+  stages: WorkspaceStage[],
+  servants: Servant[],
+  existing?: MonthlySchedule
+): StageLessonPlan[] {
+  return stages.map((stg, idx) => {
+    const matched = existing?.stageLessons?.find(
+      (sl) => sl.stageId === stg.id || sl.stageName === stg.name
+    );
+    if (matched) {
+      return {
+        stageId: stg.id,
+        stageName: stg.name,
+        lessonTitle: matched.lessonTitle || '',
+        memoryVerse: matched.memoryVerse || '',
+        primaryTeacherId: matched.primaryTeacherId || servants[0]?.id || '',
+        primaryTeacherName: matched.primaryTeacherName || servants[0]?.fullName || '',
+        customPrimaryTeacherName: matched.customPrimaryTeacherName || '',
+        backupTeacherId: matched.backupTeacherId || '',
+        backupTeacherName: matched.backupTeacherName || '-- بدون خادم احتياطي --',
+      };
+    }
+
+    if (existing && !existing.stageLessons?.length && (idx === 0 || existing.grade === stg.name)) {
+      return {
+        stageId: stg.id,
+        stageName: stg.name,
+        lessonTitle: existing.lessonTitle || '',
+        memoryVerse: existing.memoryVerse || '',
+        primaryTeacherId: existing.primaryTeacherId || servants[0]?.id || '',
+        primaryTeacherName: existing.primaryTeacherName || servants[0]?.fullName || '',
+        customPrimaryTeacherName: '',
+        backupTeacherId: existing.backupTeacherId || '',
+        backupTeacherName: existing.backupTeacherName || '-- بدون خادم احتياطي --',
+      };
+    }
+
+    return {
+      stageId: stg.id,
+      stageName: stg.name,
+      lessonTitle: '',
+      memoryVerse: '',
+      primaryTeacherId: servants[0]?.id || '',
+      primaryTeacherName: servants[0]?.fullName || '',
+      customPrimaryTeacherName: '',
+      backupTeacherId: '',
+      backupTeacherName: '-- بدون خادم احتياطي --',
+    };
+  });
+}
+
 export const SchedulesAndVisitationTab: React.FC<SchedulesAndVisitationTabProps> = ({
   bundle,
   currentUser,
   onRefresh,
 }) => {
   const { workspace, monthlySchedules, visitationSchedules, servants, students } = bundle;
+  const workspaceStages = useMemo(() => getWorkspaceStages(workspace), [workspace]);
+  const stageNames = useMemo(() => getWorkspaceStageNames(workspace), [workspace]);
   const isAdmin =
     currentUser.role === 'environment_owner' ||
     currentUser.role === 'head_servant' ||
@@ -101,25 +203,13 @@ export const SchedulesAndVisitationTab: React.FC<SchedulesAndVisitationTabProps>
   const [feedback, setFeedback] = useState('');
   const [error, setError] = useState('');
 
-  // Schedule form state
-  const [schForm, setSchForm] = useState<Partial<MonthlySchedule>>({
+  // Multi-card Schedule form state
+  const [schForm, setSchForm] = useState<ScheduleFormState>(() => ({
     date: new Date().toISOString().slice(0, 10),
-    grade: workspace.grades[0] || '',
-    lessonTitle: '',
-    memoryVerse: '',
-    primaryTeacherId: servants[0]?.id || '',
-    backupTeacherId: servants[1]?.id || servants[0]?.id || '',
+    stageLessons: buildInitialStageLessons(workspaceStages, servants),
+    segmentDetails: buildDefaultSegmentDetails(),
     notes: '',
-    segments: {
-      openingPrayer: true,
-      hymns: true,
-      coptic: false,
-      rites: false,
-      behavior: true,
-      weeklyReadings: true,
-      visitationReview: true,
-    },
-  });
+  }));
 
   // Visitation filters & inline notes draft
   const [searchQuery, setSearchQuery] = useState('');
@@ -136,43 +226,80 @@ export const SchedulesAndVisitationTab: React.FC<SchedulesAndVisitationTabProps>
   const [assignGradeFilter, setAssignGradeFilter] = useState('all');
 
   const openNewScheduleModal = () => {
+    setError('');
     setSchForm({
       date: new Date().toISOString().slice(0, 10),
-      grade: workspace.grades[0] || '',
-      lessonTitle: '',
-      memoryVerse: '',
-      primaryTeacherId: servants[0]?.id || '',
-      backupTeacherId: servants[1]?.id || servants[0]?.id || '',
+      stageLessons: buildInitialStageLessons(workspaceStages, servants),
+      segmentDetails: buildDefaultSegmentDetails(),
       notes: '',
-      segments: {
-        openingPrayer: true,
-        hymns: true,
-        coptic: false,
-        rites: false,
-        behavior: true,
-        weeklyReadings: true,
-        visitationReview: true,
-      },
     });
     setShowScheduleModal(true);
   };
 
   const openEditScheduleModal = (sch: MonthlySchedule) => {
-    setSchForm({ ...sch });
+    setError('');
+    setSchForm({
+      id: sch.id,
+      date: sch.date,
+      stageLessons: buildInitialStageLessons(workspaceStages, servants, sch),
+      segmentDetails: buildDefaultSegmentDetails(sch),
+      notes: sch.notes || '',
+    });
     setShowScheduleModal(true);
   };
 
   const handleSaveSchedule = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSaving(true);
     setError('');
+
+    const hasAnyLesson = schForm.stageLessons.some((sl) => sl.lessonTitle.trim().length > 0);
+    if (!hasAnyLesson) {
+      setError('يرجى إدخال موضوع الدرس لمرحلة واحدة على الأقل.');
+      return;
+    }
+
+    const missingCustom = schForm.stageLessons.find(
+      (sl) => sl.primaryTeacherId === '__custom__' && !sl.customPrimaryTeacherName?.trim()
+    );
+    if (missingCustom) {
+      setError(`يرجى كتابة اسم الخادم الأساسي المخصص لمرحلة «${missingCustom.stageName}».`);
+      return;
+    }
+
+    setSaving(true);
     try {
+      const segmentsBool = SEGMENT_LABELS.reduce((acc, seg) => {
+        acc[seg.key] = Boolean(schForm.segmentDetails[seg.key]?.enabled);
+        return acc;
+      }, {} as ServiceSegments);
+
+      const firstWithTitle =
+        schForm.stageLessons.find((sl) => sl.lessonTitle.trim()) || schForm.stageLessons[0];
+
       await apiFetch(`/api/workspaces/${workspace.id}/schedules`, {
         method: 'POST',
-        body: JSON.stringify(schForm),
+        body: JSON.stringify({
+          id: schForm.id,
+          date: schForm.date,
+          dateLabel: formatLiveArabicDate(schForm.date),
+          grade: schForm.stageLessons.map((s) => s.stageName).join('، '),
+          lessonTitle: firstWithTitle?.lessonTitle || '',
+          memoryVerse: firstWithTitle?.memoryVerse || '',
+          primaryTeacherId: firstWithTitle?.primaryTeacherId || '',
+          primaryTeacherName:
+            firstWithTitle?.primaryTeacherId === '__custom__'
+              ? firstWithTitle.customPrimaryTeacherName?.trim() || ''
+              : firstWithTitle?.primaryTeacherName || '',
+          backupTeacherId: firstWithTitle?.backupTeacherId || '',
+          backupTeacherName: firstWithTitle?.backupTeacherName || '-- بدون خادم احتياطي --',
+          stageLessons: schForm.stageLessons,
+          segments: segmentsBool,
+          segmentDetails: schForm.segmentDetails,
+          notes: schForm.notes.trim(),
+        }),
       });
       setShowScheduleModal(false);
-      setFeedback('تم حفظ جدول الخدمة بنجاح.');
+      setFeedback('تم حفظ جدول الخدمة الأسبوعي بنجاح.');
       await onRefresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'تعذر حفظ جدول الخدمة.');
@@ -181,11 +308,12 @@ export const SchedulesAndVisitationTab: React.FC<SchedulesAndVisitationTabProps>
     }
   };
 
-  const handleSwapTeachers = async (scheduleId: string) => {
+  const handleSwapTeachers = async (scheduleId: string, stageIndex = 0) => {
     setError('');
     try {
       await apiFetch(`/api/workspaces/${workspace.id}/schedules/${scheduleId}/swap`, {
         method: 'POST',
+        body: JSON.stringify({ stageIndex }),
       });
       setFeedback('تم تبديل الخادم الأساسي والاحتياطي بنقرة واحدة.');
       await onRefresh();
@@ -563,83 +691,193 @@ export const SchedulesAndVisitationTab: React.FC<SchedulesAndVisitationTabProps>
       </div>
 
       {subTab === 'schedule' ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           {monthlySchedules.length === 0 ? (
-            <div className="md:col-span-2 bg-[#FFFDF9] border border-[#EAE0D5] rounded-2xl p-12 text-center text-sm text-[#755953]">
+            <div className="lg:col-span-2 bg-[#FFFDF9] border border-[#EAE0D5] rounded-2xl p-12 text-center text-sm text-[#755953]">
               لا توجد حصص مجدولة بعد. أضف أول لقاء من الزر أعلاه.
             </div>
           ) : (
-            monthlySchedules.map((sch) => (
-              <article
-                key={sch.id}
-                className="bg-[#FFFDF9] border border-[#EAE0D5] rounded-2xl p-5 flex flex-col justify-between gap-4"
-              >
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between gap-2 text-xs">
-                    <span className="font-mono tabular-nums font-bold text-[#A46714] flex items-center gap-1.5">
-                      <Calendar className="w-4 h-4" />
-                      {sch.date}
-                    </span>
-                    <span className="font-bold text-[#7A1523]">{sch.grade}</span>
-                  </div>
+            monthlySchedules.map((sch) => {
+              const stagePlans =
+                sch.stageLessons && sch.stageLessons.length > 0
+                  ? sch.stageLessons
+                  : [
+                      {
+                        stageId: 'stg_legacy',
+                        stageName: sch.grade || stageNames[0] || 'المرحلة',
+                        lessonTitle: sch.lessonTitle,
+                        memoryVerse: sch.memoryVerse,
+                        primaryTeacherId: sch.primaryTeacherId,
+                        primaryTeacherName: sch.primaryTeacherName,
+                        backupTeacherId: sch.backupTeacherId,
+                        backupTeacherName: sch.backupTeacherName,
+                      },
+                    ];
+              const activeSegments = SEGMENT_LABELS.filter((seg) =>
+                sch.segmentDetails ? sch.segmentDetails[seg.key]?.enabled : sch.segments?.[seg.key]
+              );
 
-                  <h3 className="font-extrabold text-base text-[#2C1813]">{sch.lessonTitle}</h3>
-                  {sch.memoryVerse && (
-                    <p className="text-xs bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl p-3 text-[#2C1813]">
-                      {sch.memoryVerse}
-                    </p>
-                  )}
-
-                  <div className="text-xs space-y-1 pt-1">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[#755953]">الخادم الأساسي:</span>
-                      <span className="font-bold text-[#2C1813]">{sch.primaryTeacherName}</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-[#755953]">الخادم الاحتياطي:</span>
-                      <span className="font-semibold text-[#755953]">{sch.backupTeacherName}</span>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap gap-1.5 pt-2 border-t border-[#EAE0D5]">
-                    {SEGMENT_LABELS.filter((seg) => sch.segments?.[seg.key]).map((seg) => (
-                      <span key={seg.key} className="text-[11px] text-[#755953] font-semibold">
-                        ✓ {seg.label}
+              return (
+                <article
+                  key={sch.id}
+                  className="bg-[#FFFDF9] border border-[#EAE0D5] rounded-2xl p-5 flex flex-col justify-between gap-4"
+                >
+                  <div className="space-y-4">
+                    {/* Schedule Date Header */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[#EAE0D5]">
+                      <div className="flex items-center gap-2">
+                        <div className="w-9 h-9 rounded-xl bg-[#FBF2D8] border border-[#D4AF37]/40 text-[#A46714] flex items-center justify-center shrink-0">
+                          <Calendar className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <p className="font-extrabold text-sm text-[#2C1813]">
+                            {sch.dateLabel || formatLiveArabicDate(sch.date)}
+                          </p>
+                          <p className="text-[11px] font-mono tabular-nums text-[#755953]">
+                            {sch.date}
+                          </p>
+                        </div>
+                      </div>
+                      <span className="px-2.5 py-1 rounded-lg bg-[#FDF2F4] border border-[#7A1523]/15 text-[11px] font-bold text-[#7A1523]">
+                        {stagePlans.length} {stagePlans.length === 1 ? 'مرحلة' : stagePlans.length === 2 ? 'مرحلتين' : 'مراحل'}
                       </span>
-                    ))}
-                  </div>
-                </div>
+                    </div>
 
-                <div className="flex items-center justify-between gap-2 pt-3 border-t border-[#EAE0D5]">
-                  <button
-                    type="button"
-                    onClick={() => handleSwapTeachers(sch.id)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#FAF6EE] border border-[#EAE0D5] hover:border-[#A46714] text-xs font-bold text-[#2C1813] cursor-pointer"
-                  >
-                    <ArrowLeftRight className="w-3.5 h-3.5 text-[#A46714]" />
-                    تبديل الأساسي والاحتياطي
-                  </button>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => openEditScheduleModal(sch)}
-                      className="px-3 py-1.5 rounded-xl border border-[#EAE0D5] text-xs font-bold hover:bg-[#FAF6EE] cursor-pointer"
-                    >
-                      تعديل
-                    </button>
-                    {isAdmin && (
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteSchedule(sch.id)}
-                        className="p-1.5 rounded-xl border border-[#EAE0D5] hover:bg-[#FDF2F4] text-[#7A1523] cursor-pointer"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                    {/* Per-Stage Lessons Cards */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {stagePlans.map((sl, idx) => (
+                        <div
+                          key={`${sch.id}_${sl.stageId}_${idx}`}
+                          className="rounded-xl bg-[#FAF6EE] border border-[#EAE0D5] p-3.5 space-y-2 flex flex-col justify-between"
+                        >
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[11px] font-extrabold text-[#7A1523]">
+                                {sl.stageName}
+                              </span>
+                              {sl.backupTeacherId && (
+                                <button
+                                  type="button"
+                                  onClick={() => void handleSwapTeachers(sch.id, idx)}
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#FFFDF9] border border-[#EAE0D5] hover:border-[#A46714] text-[10px] font-bold text-[#A46714] cursor-pointer"
+                                  title="تبديل الأساسي والاحتياطي لهذه المرحلة"
+                                >
+                                  <ArrowLeftRight className="w-3 h-3" />
+                                  تبديل
+                                </button>
+                              )}
+                            </div>
+                            <h4 className="font-extrabold text-sm text-[#2C1813] leading-snug">
+                              {sl.lessonTitle || 'لم يُحدد موضوع الدرس'}
+                            </h4>
+                            {sl.memoryVerse && (
+                              <p className="text-[11px] bg-[#FFFDF9] border border-[#EAE0D5] rounded-lg p-2 text-[#755953] leading-relaxed">
+                                {sl.memoryVerse}
+                              </p>
+                            )}
+                          </div>
+
+                          <div className="text-[11px] space-y-1 pt-2 border-t border-[#EAE0D5]">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[#755953]">الأساسي:</span>
+                              <span className="font-bold text-[#2C1813] truncate">
+                                {sl.primaryTeacherName || 'غير محدد'}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[#755953]">الاحتياطي:</span>
+                              <span className="font-semibold text-[#755953] truncate">
+                                {sl.backupTeacherId ? sl.backupTeacherName : '—'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Active Spiritual Day Segments */}
+                    {activeSegments.length > 0 && (
+                      <div className="space-y-2 pt-2 border-t border-[#EAE0D5]">
+                        <p className="text-[11px] font-extrabold text-[#755953]">
+                          فقرات اليوم الروحي المفعّلة ({activeSegments.length}):
+                        </p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {activeSegments.map((seg) => {
+                            const detail = sch.segmentDetails?.[seg.key];
+                            return (
+                              <div
+                                key={seg.key}
+                                className="px-3 py-2 rounded-xl bg-[#FBF2D8]/45 border border-[#D4AF37]/30 text-[11px] space-y-0.5"
+                              >
+                                <div className="font-extrabold text-[#2C1813]">✓ {seg.label}</div>
+                                {(detail?.primaryServantName || detail?.backupServantName) && (
+                                  <div className="text-[#755953] flex flex-wrap gap-x-2">
+                                    {detail.primaryServantName && (
+                                      <span>
+                                        أساسي:{' '}
+                                        <strong className="text-[#2C1813]">
+                                          {detail.primaryServantName}
+                                        </strong>
+                                      </span>
+                                    )}
+                                    {detail.backupServantName && (
+                                      <span>بديل: {detail.backupServantName}</span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Notes */}
+                    {sch.notes && (
+                      <div className="text-xs bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl p-3 text-[#755953]">
+                        <span className="font-bold text-[#2C1813] ml-1">ملاحظات:</span>
+                        {sch.notes}
+                      </div>
                     )}
                   </div>
-                </div>
-              </article>
-            ))
+
+                  {/* Card Footer */}
+                  <div className="flex items-center justify-between gap-2 pt-3 border-t border-[#EAE0D5]">
+                    {stagePlans[0]?.backupTeacherId ? (
+                      <button
+                        type="button"
+                        onClick={() => void handleSwapTeachers(sch.id, 0)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#FAF6EE] border border-[#EAE0D5] hover:border-[#A46714] text-xs font-bold text-[#2C1813] cursor-pointer"
+                      >
+                        <ArrowLeftRight className="w-3.5 h-3.5 text-[#A46714]" />
+                        تبديل خدام المرحلة الأولى
+                      </button>
+                    ) : (
+                      <div />
+                    )}
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => openEditScheduleModal(sch)}
+                        className="px-3.5 py-1.5 rounded-xl border border-[#EAE0D5] text-xs font-bold hover:bg-[#FAF6EE] cursor-pointer"
+                      >
+                        تعديل
+                      </button>
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteSchedule(sch.id)}
+                          className="p-1.5 rounded-xl border border-[#EAE0D5] hover:bg-[#FDF2F4] text-[#7A1523] cursor-pointer"
+                          title="حذف الأسبوع"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </article>
+              );
+            })
           )}
         </div>
       ) : (
@@ -946,7 +1184,7 @@ export const SchedulesAndVisitationTab: React.FC<SchedulesAndVisitationTabProps>
                   className="bg-[#FFFDF9] border border-[#EAE0D5] rounded-xl px-3 py-2 text-xs font-bold"
                 >
                   <option value="all">كل المراحل</option>
-                  {workspace.grades.map((g) => (
+                  {stageNames.map((g) => (
                     <option key={g} value={g}>
                       {g}
                     </option>
@@ -1097,111 +1335,347 @@ export const SchedulesAndVisitationTab: React.FC<SchedulesAndVisitationTabProps>
         </div>
       )}
 
-      {/* Schedule Create/Edit Modal */}
+      {/* Rich Multi-Card Weekly Service Schedule Modal */}
       {showScheduleModal && (
-        <div className="fixed inset-0 z-50 bg-[#2C1813]/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-[#FFFDF9] border border-[#EAE0D5] rounded-3xl max-w-xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-extrabold text-[#2C1813]">تفاصيل لقاء الخدمة الأسبوعي</h3>
-              <button type="button" onClick={() => setShowScheduleModal(false)} className="cursor-pointer">
+        <div className="fixed inset-0 z-50 bg-[#2C1813]/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
+          <div className="bg-[#FFFDF9] border border-[#EAE0D5] rounded-3xl max-w-5xl w-full max-h-[92vh] flex flex-col overflow-hidden">
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-[#EAE0D5] bg-[#FAF6EE] flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-extrabold text-[#2C1813]">
+                  {schForm.id ? 'تعديل أسبوع في الجدول' : 'إضافة أسبوع جديد في الجدول'}
+                </h3>
+                <p className="text-xs text-[#755953] mt-0.5">
+                  تنظيم الدروس والآيات والخدام لكل مرحلة وفقرات اليوم الروحي السبعة
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowScheduleModal(false)}
+                className="p-2 rounded-xl hover:bg-[#FFFDF9] text-[#755953] cursor-pointer"
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <form onSubmit={handleSaveSchedule} className="space-y-4">
-              <div className="grid grid-cols-2 gap-3">
-                <input
-                  type="date"
-                  required
-                  value={schForm.date || ''}
-                  onChange={(e) => setSchForm({ ...schForm, date: e.target.value })}
-                  className="bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3 py-2 text-sm font-mono"
-                />
-                <select
-                  value={schForm.grade || ''}
-                  onChange={(e) => setSchForm({ ...schForm, grade: e.target.value })}
-                  className="bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3 py-2 text-sm"
+
+            <form onSubmit={handleSaveSchedule} className="overflow-y-auto p-6 space-y-6">
+              {/* 1. Date Picker + Live Arabic Date Label */}
+              <div className="p-4 rounded-2xl bg-[#FAF6EE] border border-[#EAE0D5] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="sm:w-64">
+                  <label className="block text-xs font-extrabold text-[#2C1813] mb-1.5">
+                    تاريخ لقاء الخدمة
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={schForm.date}
+                    onChange={(e) => setSchForm((prev) => ({ ...prev, date: e.target.value }))}
+                    className="w-full bg-[#FFFDF9] border border-[#EAE0D5] focus:border-[#7A1523] focus:outline-none rounded-xl px-3.5 py-2 text-sm font-mono"
+                  />
+                </div>
+                <div className="flex-1 bg-[#FBF2D8]/75 border border-[#D4AF37]/45 rounded-xl px-4 py-3 flex items-center gap-2.5">
+                  <Calendar className="w-4 h-4 text-[#A46714] shrink-0" />
+                  <div className="text-xs">
+                    <span className="text-[#755953] ml-1.5">التسمية الظاهرة:</span>
+                    <strong className="font-extrabold text-[#2C1813]">
+                      {formatLiveArabicDate(schForm.date)}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* 2. Dynamic Per-Stage Lesson & Teachers Cards */}
+              <section className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="text-sm font-extrabold text-[#2C1813] flex items-center gap-2">
+                    <BookOpen className="w-4 h-4 text-[#7A1523]" />
+                    <span>موضوع الدرس والآية وخدام الدرس لكل مرحلة</span>
+                  </h4>
+                  <span className="text-[11px] font-mono tabular-nums font-bold text-[#A46714]">
+                    {schForm.stageLessons.length}{' '}
+                    {schForm.stageLessons.length === 1
+                      ? 'مرحلة'
+                      : schForm.stageLessons.length === 2
+                      ? 'مرحلتين'
+                      : 'مراحل'}
+                  </span>
+                </div>
+
+                <div
+                  className={`grid grid-cols-1 md:grid-cols-2 ${
+                    schForm.stageLessons.length >= 3 ? 'xl:grid-cols-3' : ''
+                  } gap-4`}
                 >
-                  {workspace.grades.map((g) => (
-                    <option key={g} value={g}>{g}</option>
-                  ))}
-                </select>
-              </div>
-              <input
-                type="text"
-                required
-                value={schForm.lessonTitle || ''}
-                onChange={(e) => setSchForm({ ...schForm, lessonTitle: e.target.value })}
-                placeholder="عنوان الدرس"
-                className="w-full bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3.5 py-2.5 text-sm"
-              />
-              <input
-                type="text"
-                value={schForm.memoryVerse || ''}
-                onChange={(e) => setSchForm({ ...schForm, memoryVerse: e.target.value })}
-                placeholder="آية الحفظ"
-                className="w-full bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3.5 py-2.5 text-sm"
-              />
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold mb-1">الخادم الأساسي</label>
-                  <select
-                    value={schForm.primaryTeacherId || ''}
-                    onChange={(e) => setSchForm({ ...schForm, primaryTeacherId: e.target.value })}
-                    className="w-full bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3 py-2 text-sm"
-                  >
-                    {servants.map((srv) => (
-                      <option key={srv.id} value={srv.id}>{srv.fullName}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold mb-1">الخادم الاحتياطي</label>
-                  <select
-                    value={schForm.backupTeacherId || ''}
-                    onChange={(e) => setSchForm({ ...schForm, backupTeacherId: e.target.value })}
-                    className="w-full bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3 py-2 text-sm"
-                  >
-                    {servants.map((srv) => (
-                      <option key={srv.id} value={srv.id}>{srv.fullName}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+                  {schForm.stageLessons.map((sl, idx) => {
+                    const updateStage = (patch: Partial<StageLessonPlan>) => {
+                      setSchForm((prev) => ({
+                        ...prev,
+                        stageLessons: prev.stageLessons.map((item, i) =>
+                          i === idx ? { ...item, ...patch } : item
+                        ),
+                      }));
+                    };
 
-              <div className="pt-2 border-t border-[#EAE0D5]">
-                <p className="text-xs font-bold text-[#755953] mb-2">فقرات الخدمة الـ 7:</p>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                  {SEGMENT_LABELS.map((seg) => (
-                    <label
-                      key={seg.key}
-                      className="flex items-center gap-2 text-xs font-semibold p-2 rounded-xl bg-[#FAF6EE] cursor-pointer"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={Boolean(schForm.segments?.[seg.key])}
-                        onChange={(e) =>
-                          setSchForm({
-                            ...schForm,
-                            segments: {
-                              ...(schForm.segments as ServiceSegments),
-                              [seg.key]: e.target.checked,
-                            },
-                          })
-                        }
-                      />
-                      <span>{seg.label}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
+                    return (
+                      <div
+                        key={`${sl.stageId}_${idx}`}
+                        className="bg-[#FAF6EE] border border-[#EAE0D5] rounded-2xl p-4 space-y-3"
+                      >
+                        <div className="flex items-center justify-between pb-2 border-b border-[#EAE0D5]">
+                          <span className="font-extrabold text-sm text-[#7A1523]">
+                            {sl.stageName}
+                          </span>
+                          <span className="text-[11px] font-mono tabular-nums font-bold text-[#A46714]">
+                            #{idx + 1}
+                          </span>
+                        </div>
 
-              <button
-                type="submit"
-                disabled={saving}
-                className="w-full py-2.5 rounded-xl bg-[#7A1523] text-white text-xs font-bold cursor-pointer"
-              >
-                {saving ? 'جاري الحفظ...' : 'حفظ اللقاء'}
-              </button>
+                        <div>
+                          <label className="block text-xs font-bold text-[#2C1813] mb-1">
+                            موضوع درس {sl.stageName}
+                          </label>
+                          <input
+                            type="text"
+                            value={sl.lessonTitle}
+                            onChange={(e) => updateStage({ lessonTitle: e.target.value })}
+                            placeholder={`أدخل عنوان درس ${sl.stageName}...`}
+                            className="w-full bg-[#FFFDF9] border border-[#EAE0D5] focus:border-[#7A1523] focus:outline-none rounded-xl px-3 py-2 text-sm"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-bold text-[#2C1813] mb-1">
+                            آية {sl.stageName} للحفظ
+                          </label>
+                          <input
+                            type="text"
+                            value={sl.memoryVerse}
+                            onChange={(e) => updateStage({ memoryVerse: e.target.value })}
+                            placeholder="نص الآية والشاهد..."
+                            className="w-full bg-[#FFFDF9] border border-[#EAE0D5] focus:border-[#7A1523] focus:outline-none rounded-xl px-3 py-2 text-sm"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-bold text-[#2C1813] mb-1">
+                            الخادم الأساسي
+                          </label>
+                          <select
+                            value={sl.primaryTeacherId}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              if (val === '__custom__') {
+                                updateStage({
+                                  primaryTeacherId: '__custom__',
+                                  primaryTeacherName: sl.customPrimaryTeacherName || '',
+                                });
+                              } else {
+                                const srv = servants.find((s) => s.id === val);
+                                updateStage({
+                                  primaryTeacherId: val,
+                                  primaryTeacherName: srv?.fullName || '',
+                                  customPrimaryTeacherName: '',
+                                });
+                              }
+                            }}
+                            className="w-full bg-[#FFFDF9] border border-[#EAE0D5] focus:border-[#7A1523] focus:outline-none rounded-xl px-3 py-2 text-sm"
+                          >
+                            {servants.map((srv) => (
+                              <option key={srv.id} value={srv.id}>
+                                {srv.fullName}
+                              </option>
+                            ))}
+                            <option value="__custom__">-- كتابة اسم مخصص --</option>
+                          </select>
+
+                          {sl.primaryTeacherId === '__custom__' && (
+                            <input
+                              type="text"
+                              value={sl.customPrimaryTeacherName || ''}
+                              onChange={(e) =>
+                                updateStage({
+                                  customPrimaryTeacherName: e.target.value,
+                                  primaryTeacherName: e.target.value,
+                                })
+                              }
+                              placeholder="اكتب اسم الخادم أو الضيف المخصص..."
+                              className="mt-2 w-full bg-[#FFFDF9] border border-[#D4AF37]/60 focus:border-[#7A1523] focus:outline-none rounded-xl px-3 py-2 text-xs font-semibold"
+                            />
+                          )}
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-bold text-[#2C1813] mb-1">
+                            الخادم الاحتياطي
+                          </label>
+                          <select
+                            value={sl.backupTeacherId}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              const srv = servants.find((s) => s.id === val);
+                              updateStage({
+                                backupTeacherId: val,
+                                backupTeacherName: srv?.fullName || '-- بدون خادم احتياطي --',
+                              });
+                            }}
+                            className="w-full bg-[#FFFDF9] border border-[#EAE0D5] focus:border-[#7A1523] focus:outline-none rounded-xl px-3 py-2 text-sm"
+                          >
+                            <option value="">-- بدون خادم احتياطي --</option>
+                            {servants.map((srv) => (
+                              <option key={srv.id} value={srv.id}>
+                                {srv.fullName}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+
+              {/* 3. 7 Optional Spiritual Day Segment Cards */}
+              <section className="space-y-3 pt-2 border-t border-[#EAE0D5]">
+                <h4 className="text-sm font-extrabold text-[#2C1813] flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-[#A46714]" />
+                  <span>فقرات اليوم الروحي الاختيارية</span>
+                </h4>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+                  {SEGMENT_LABELS.map((seg) => {
+                    const detail = schForm.segmentDetails[seg.key];
+                    const updateSegment = (
+                      patch: Partial<ServiceSegmentDetailsMap[keyof ServiceSegments]>
+                    ) => {
+                      setSchForm((prev) => ({
+                        ...prev,
+                        segmentDetails: {
+                          ...prev.segmentDetails,
+                          [seg.key]: {
+                            ...prev.segmentDetails[seg.key],
+                            ...patch,
+                          },
+                        },
+                      }));
+                    };
+
+                    return (
+                      <div
+                        key={seg.key}
+                        className={`rounded-2xl border p-3.5 space-y-2.5 transition-colors ${
+                          detail.enabled
+                            ? 'bg-[#FFFDF9] border-[#D4AF37]/55'
+                            : 'bg-[#FAF6EE]/65 border-[#EAE0D5] opacity-75'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2 pb-2 border-b border-[#EAE0D5]">
+                          <span className="font-extrabold text-xs text-[#2C1813]">
+                            {seg.label}
+                          </span>
+                          <label className="inline-flex items-center gap-1.5 text-[11px] font-bold text-[#7A1523] cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={detail.enabled}
+                              onChange={(e) => updateSegment({ enabled: e.target.checked })}
+                              className="w-4 h-4 accent-[#7A1523] cursor-pointer"
+                            />
+                            <span>مفعّلة</span>
+                          </label>
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-bold text-[#755953] mb-1">
+                            أساسي
+                          </label>
+                          <select
+                            disabled={!detail.enabled}
+                            value={detail.primaryServantId}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              const srv = servants.find((s) => s.id === val);
+                              updateSegment({
+                                primaryServantId: val,
+                                primaryServantName: srv?.fullName || '',
+                              });
+                            }}
+                            className="w-full bg-[#FAF6EE] border border-[#EAE0D5] disabled:opacity-60 rounded-xl px-2.5 py-1.5 text-xs"
+                          >
+                            <option value="">-- اختر الخادم --</option>
+                            {servants.map((srv) => (
+                              <option key={srv.id} value={srv.id}>
+                                {srv.fullName}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-bold text-[#755953] mb-1">
+                            بديل / احتياطي
+                          </label>
+                          <select
+                            disabled={!detail.enabled}
+                            value={detail.backupServantId}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              const srv = servants.find((s) => s.id === val);
+                              updateSegment({
+                                backupServantId: val,
+                                backupServantName: srv?.fullName || '',
+                              });
+                            }}
+                            className="w-full bg-[#FAF6EE] border border-[#EAE0D5] disabled:opacity-60 rounded-xl px-2.5 py-1.5 text-xs"
+                          >
+                            <option value="">-- بدون بديل --</option>
+                            {servants.map((srv) => (
+                              <option key={srv.id} value={srv.id}>
+                                {srv.fullName}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+
+              {/* 4. Notes & Supplies */}
+              <section className="space-y-1.5 pt-2 border-t border-[#EAE0D5]">
+                <label className="text-xs font-extrabold text-[#2C1813] flex items-center gap-1.5">
+                  <FileText className="w-4 h-4 text-[#7A1523]" />
+                  <span>ملاحظات ومستلزمات</span>
+                </label>
+                <textarea
+                  rows={3}
+                  value={schForm.notes}
+                  onChange={(e) => setSchForm((prev) => ({ ...prev, notes: e.target.value }))}
+                  placeholder="أدخل أي تجهيزات، أدوات، جوائز، أو ملاحظات خاصة بهذا الأسبوع..."
+                  className="w-full bg-[#FAF6EE] border border-[#EAE0D5] focus:border-[#7A1523] focus:outline-none rounded-2xl px-4 py-3 text-sm"
+                />
+              </section>
+
+              {/* Submit Bar */}
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowScheduleModal(false)}
+                  className="px-5 py-2.5 rounded-xl border border-[#EAE0D5] text-xs font-bold text-[#755953] cursor-pointer"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="px-6 py-2.5 rounded-xl bg-[#7A1523] hover:bg-[#620F1B] disabled:opacity-60 text-white text-xs font-bold cursor-pointer"
+                >
+                  {saving
+                    ? 'جاري الحفظ...'
+                    : schForm.id
+                    ? 'حفظ تعديلات الأسبوع'
+                    : '+ إضافة الأسبوع للجدول'}
+                </button>
+              </div>
             </form>
           </div>
         </div>

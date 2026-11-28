@@ -48,8 +48,19 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
     );
   }
 
-  const nextSchedule = bundle.monthlySchedules.find((s) => s.grade === student.grade) ||
-    bundle.monthlySchedules[0];
+  const nextSchedule =
+    bundle.monthlySchedules.find(
+      (s) =>
+        s.stageLessons?.some((sl) => sl.stageName === student.grade && sl.lessonTitle) ||
+        s.grade === student.grade
+    ) || bundle.monthlySchedules[0];
+  const matchedStageLesson =
+    nextSchedule?.stageLessons?.find((sl) => sl.stageName === student.grade) ||
+    nextSchedule?.stageLessons?.[0];
+  const displayedLessonTitle = matchedStageLesson?.lessonTitle || nextSchedule?.lessonTitle || '';
+  const displayedMemoryVerse = matchedStageLesson?.memoryVerse || nextSchedule?.memoryVerse || '';
+  const displayedPrimaryTeacher =
+    matchedStageLesson?.primaryTeacherName || nextSchedule?.primaryTeacherName || '';
   const progressPercent = Math.min(100, Math.round((student.points / 300) * 100));
 
   const handleSubmitChangeRequest = async (e: React.FormEvent) => {
@@ -185,23 +196,23 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
             <div className="lg:col-span-7 space-y-6">
               {nextSchedule && (
                 <section className="bg-[#FFFDF9] border border-[#EAE0D5] rounded-2xl p-6 space-y-3">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2">
                     <h2 className="font-extrabold text-base text-[#2C1813] flex items-center gap-2">
                       <BookOpen className="w-5 h-5 text-[#7A1523]" />
-                      درس وآية الأسبوع القادم
+                      درس وآية الأسبوع القادم ({student.grade})
                     </h2>
                     <span className="text-xs font-mono tabular-nums text-[#A46714] font-bold">
-                      {nextSchedule.date}
+                      {nextSchedule.dateLabel || nextSchedule.date}
                     </span>
                   </div>
-                  <h3 className="text-lg font-bold text-[#7A1523]">{nextSchedule.lessonTitle}</h3>
-                  {nextSchedule.memoryVerse && (
+                  <h3 className="text-lg font-bold text-[#7A1523]">{displayedLessonTitle}</h3>
+                  {displayedMemoryVerse && (
                     <p className="text-sm bg-[#FBF2D8]/60 border border-[#D4AF37]/30 rounded-xl p-3.5 text-[#2C1813] leading-relaxed">
-                      {nextSchedule.memoryVerse}
+                      {displayedMemoryVerse}
                     </p>
                   )}
                   <p className="text-xs text-[#755953]">
-                    تقديم الدرس: <strong className="text-[#2C1813]">{nextSchedule.primaryTeacherName}</strong>
+                    تقديم الدرس: <strong className="text-[#2C1813]">{displayedPrimaryTeacher}</strong>
                   </p>
                 </section>
               )}

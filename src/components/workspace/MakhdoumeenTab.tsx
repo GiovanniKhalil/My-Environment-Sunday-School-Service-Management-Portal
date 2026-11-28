@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   FileUp,
   Layers,
@@ -21,6 +21,7 @@ import {
   apiFetch,
   buildWhatsAppUrl,
   compressImageToDataUrl,
+  getWorkspaceStageNames,
   parseStudentsSpreadsheet,
   type ImportedStudentRow,
 } from '../../utils/api';
@@ -37,6 +38,7 @@ export const MakhdoumeenTab: React.FC<MakhdoumeenTabProps> = ({
   onRefresh,
 }) => {
   const { workspace, students } = bundle;
+  const stageNames = useMemo(() => getWorkspaceStageNames(workspace), [workspace]);
   const isAdmin =
     currentUser.role === 'environment_owner' ||
     currentUser.role === 'head_servant' ||
@@ -53,7 +55,7 @@ export const MakhdoumeenTab: React.FC<MakhdoumeenTabProps> = ({
 
   const [addForm, setAddForm] = useState({
     fullName: '',
-    grade: workspace.grades[0] || '',
+    grade: stageNames[0] || '',
     gender: 'ذكر' as Gender,
     birthDate: '',
     phone: '',
@@ -65,9 +67,20 @@ export const MakhdoumeenTab: React.FC<MakhdoumeenTabProps> = ({
 
   const [importRows, setImportRows] = useState<ImportedStudentRow[]>([]);
   const [batchAction, setBatchAction] = useState<'promote_grade' | 'delete_grade' | 'reset_points'>('promote_grade');
-  const [batchFromGrade, setBatchFromGrade] = useState(workspace.grades[0] || '');
-  const [batchToGrade, setBatchToGrade] = useState(workspace.grades[1] || workspace.grades[0] || '');
+  const [batchFromGrade, setBatchFromGrade] = useState(stageNames[0] || '');
+  const [batchToGrade, setBatchToGrade] = useState(stageNames[1] || stageNames[0] || '');
   const [batchKeyword, setBatchKeyword] = useState('');
+
+  useEffect(() => {
+    setAddForm((prev) =>
+      stageNames.includes(prev.grade) ? prev : { ...prev, grade: stageNames[0] || '' }
+    );
+    setBatchFromGrade((prev) => (stageNames.includes(prev) ? prev : stageNames[0] || ''));
+    setBatchToGrade((prev) => prev || stageNames[1] || stageNames[0] || '');
+    if (gradeFilter !== 'all' && !stageNames.includes(gradeFilter)) {
+      setGradeFilter('all');
+    }
+  }, [stageNames, gradeFilter]);
 
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState('');
@@ -97,7 +110,7 @@ export const MakhdoumeenTab: React.FC<MakhdoumeenTabProps> = ({
       setShowAddModal(false);
       setAddForm({
         fullName: '',
-        grade: workspace.grades[0] || '',
+        grade: stageNames[0] || '',
         gender: 'ذكر',
         birthDate: '',
         phone: '',
@@ -248,7 +261,7 @@ export const MakhdoumeenTab: React.FC<MakhdoumeenTabProps> = ({
             className="bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3 py-2 text-xs font-bold"
           >
             <option value="all">كل المراحل ({students.length})</option>
-            {workspace.grades.map((g) => (
+            {stageNames.map((g) => (
               <option key={g} value={g}>{g}</option>
             ))}
           </select>
@@ -437,9 +450,12 @@ export const MakhdoumeenTab: React.FC<MakhdoumeenTabProps> = ({
                     onChange={(e) => setSelectedStudent({ ...selectedStudent, grade: e.target.value })}
                     className="w-full bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3 py-2 text-sm"
                   >
-                    {workspace.grades.map((g) => (
+                    {stageNames.map((g) => (
                       <option key={g} value={g}>{g}</option>
                     ))}
+                    {!stageNames.includes(selectedStudent.grade) && selectedStudent.grade && (
+                      <option value={selectedStudent.grade}>{selectedStudent.grade}</option>
+                    )}
                   </select>
                 </div>
                 <div>
@@ -607,7 +623,7 @@ export const MakhdoumeenTab: React.FC<MakhdoumeenTabProps> = ({
                   onChange={(e) => setAddForm({ ...addForm, grade: e.target.value })}
                   className="bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3 py-2 text-sm"
                 >
-                  {workspace.grades.map((g) => (
+                  {stageNames.map((g) => (
                     <option key={g} value={g}>{g}</option>
                   ))}
                 </select>
@@ -701,7 +717,7 @@ export const MakhdoumeenTab: React.FC<MakhdoumeenTabProps> = ({
                   {importRows.slice(0, 30).map((r, i) => (
                     <div key={i} className="py-2 flex items-center justify-between">
                       <span className="font-bold">{r.fullName}</span>
-                      <span className="text-[#755953]">{r.grade || workspace.grades[0]}</span>
+                      <span className="text-[#755953]">{r.grade || stageNames[0]}</span>
                     </div>
                   ))}
                 </div>
@@ -748,7 +764,7 @@ export const MakhdoumeenTab: React.FC<MakhdoumeenTabProps> = ({
                     onChange={(e) => setBatchFromGrade(e.target.value)}
                     className="w-full bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3.5 py-2 text-sm"
                   >
-                    {workspace.grades.map((g) => (
+                    {stageNames.map((g) => (
                       <option key={g} value={g}>{g}</option>
                     ))}
                   </select>
@@ -761,10 +777,16 @@ export const MakhdoumeenTab: React.FC<MakhdoumeenTabProps> = ({
                   <input
                     type="text"
                     required
+                    list="workspace-stage-suggestions"
                     value={batchToGrade}
                     onChange={(e) => setBatchToGrade(e.target.value)}
                     className="w-full bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3.5 py-2 text-sm"
                   />
+                  <datalist id="workspace-stage-suggestions">
+                    {stageNames.map((g) => (
+                      <option key={g} value={g} />
+                    ))}
+                  </datalist>
                 </div>
               )}
 

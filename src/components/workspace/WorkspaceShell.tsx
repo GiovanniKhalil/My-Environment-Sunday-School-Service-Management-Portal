@@ -12,6 +12,7 @@ import { ServantDashboard } from './ServantDashboard';
 import { MakhdoumeenTab } from './MakhdoumeenTab';
 import { SchedulesAndVisitationTab } from './SchedulesAndVisitationTab';
 import { LeadershipAndSecurityTab } from './LeadershipAndSecurityTab';
+import { UnifiedChatHub } from '../UnifiedChatHub';
 
 interface WorkspaceShellProps {
   workspace: Workspace;
@@ -21,7 +22,7 @@ interface WorkspaceShellProps {
   onLogout: () => void;
 }
 
-type WorkspaceTab = 'home' | 'students' | 'schedules' | 'leadership';
+type WorkspaceTab = 'home' | 'students' | 'schedules' | 'leadership' | 'chat';
 
 export const WorkspaceShell: React.FC<WorkspaceShellProps> = ({
   workspace,
@@ -113,6 +114,7 @@ export const WorkspaceShell: React.FC<WorkspaceShellProps> = ({
                 { key: 'students', label: 'المخدومين' },
                 { key: 'schedules', label: 'الجدول والافتقاد' },
                 { key: 'leadership', label: 'الخدام والأمان' },
+                { key: 'chat', label: 'التواصل والشات' },
               ].map((t) => (
                 <button
                   key={t.key}
@@ -160,6 +162,7 @@ export const WorkspaceShell: React.FC<WorkspaceShellProps> = ({
               { key: 'students', label: 'المخدومين' },
               { key: 'schedules', label: 'الجدول والافتقاد' },
               { key: 'leadership', label: 'الخدام والأمان' },
+              { key: 'chat', label: 'التواصل والشات' },
             ].map((t) => (
               <button
                 key={t.key}
@@ -217,6 +220,22 @@ export const WorkspaceShell: React.FC<WorkspaceShellProps> = ({
                   currentUser={currentUser}
                   onRefresh={loadBundle}
                 />
+              )}
+              {activeTab === 'chat' && (
+                <div className="space-y-4">
+                  <div>
+                    <h1 className="text-xl font-extrabold text-[#2C1813]">
+                      مركز التواصل والشات
+                    </h1>
+                    <p className="text-xs text-[#755953] mt-0.5">
+                      تواصل خدام الفصل داخلياً، مع إتاحة التواصل المباشر والجماعي لأمين الفصل والإدارة
+                    </p>
+                  </div>
+                  <UnifiedChatHub
+                    currentUser={currentUser}
+                    workspaceId={activeWorkspace.id}
+                  />
+                </div>
               )}
             </>
           )

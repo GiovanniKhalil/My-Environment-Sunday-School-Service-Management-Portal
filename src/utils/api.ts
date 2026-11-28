@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
-import type { Student } from '../types';
+import type { Student, Workspace, WorkspaceStage } from '../types';
+import { getCurrentOwnerFirebaseIdToken } from '../firebase';
 
 let inMemorySessionToken: string | null = null;
 
@@ -16,17 +17,48 @@ export function clearSessionToken(): void {
 }
 
 export async function apiFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const headers = new Headers(options.headers || {});
-  if (!headers.has('Content-Type') && options.body && !(options.body instanceof FormData)) {
-    headers.set('Content-Type', 'application/json');
-  }
-  if (inMemorySessionToken) {
-    headers.set('Authorization', `Bearer ${inMemorySessionToken}`);
-  }
-  const response = await fetch(url, {
+  const buildHeaders = async (tokenOverride?: string | null): Promise<Headers> => {
+    const headers = new Headers(options.headers || {});
+    if (!headers.has('Content-Type') && options.body && !(options.body instanceof FormData)) {
+      headers.set('Content-Type', 'application/json');
+    }
+    const token = tokenOverride !== undefined ? tokenOverride : inMemorySessionToken;
+    if (token) {
+      headers.set('Authorization', `Bearer ${token}`);
+    }
+    const fbIdToken = await getCurrentOwnerFirebaseIdToken();
+    if (fbIdToken) {
+      headers.set('X-Firebase-Id-Token', fbIdToken);
+    }
+    return headers;
+  };
+
+  let response = await fetch(url, {
     ...options,
-    headers,
+    headers: await buildHeaders(),
   });
+
+  if (response.status === 401 && !url.includes('/api/auth/')) {
+    const fbIdToken = await getCurrentOwnerFirebaseIdToken();
+    if (fbIdToken) {
+      const refreshResp = await fetch('/api/auth/google-owner', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken: fbIdToken }),
+      });
+      if (refreshResp.ok) {
+        const refreshed = (await refreshResp.json().catch(() => ({}))) as { token?: string };
+        if (refreshed.token) {
+          inMemorySessionToken = refreshed.token;
+          response = await fetch(url, {
+            ...options,
+            headers: await buildHeaders(refreshed.token),
+          });
+        }
+      }
+    }
+  }
+
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error((data as { error?: string }).error || 'حدث خطأ غير متوقع في الاتصال بالخادم.');
@@ -143,6 +175,58 @@ export function formatArabicDate(isoDate: string): string {
     month: 'short',
     day: 'numeric',
   }).format(parsed);
+}
+
+export function formatLiveArabicDate(dateStr: string): string {
+  if (!dateStr) return '—';
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr.trim());
+  const parsed = match
+    ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+    : new Date(dateStr);
+  if (Number.isNaN(parsed.getTime())) return dateStr;
+  return new Intl.DateTimeFormat('ar-EG', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  }).format(parsed);
+}
+
+export function getWorkspaceStages(
+  ws?: Pick<Workspace, 'stages' | 'grades' | 'stageConfig' | 'className'> | null
+): WorkspaceStage[] {
+  if (!ws) return [{ id: 'stg_1', name: 'المرحلة الأولى' }];
+  if (Array.isArray(ws.stages) && ws.stages.length > 0) {
+    const clean = ws.stages
+      .filter((s) => s && typeof s.name === 'string' && s.name.trim())
+      .map((s, idx) => ({
+        id: (s.id || '').trim() || `stg_${idx + 1}`,
+        name: s.name.trim(),
+      }));
+    if (clean.length > 0) return clean;
+  }
+  if (Array.isArray(ws.grades) && ws.grades.length > 0) {
+    const clean = ws.grades.map((g) => String(g).trim()).filter(Boolean);
+    if (clean.length > 0) {
+      return clean.map((name, idx) => ({ id: `stg_${idx + 1}`, name }));
+    }
+  }
+  if (ws.stageConfig) {
+    const clean = ws.stageConfig
+      .split(/[،,/]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (clean.length > 0) {
+      return clean.map((name, idx) => ({ id: `stg_${idx + 1}`, name }));
+    }
+  }
+  return [{ id: 'stg_1', name: ws.className?.trim() || 'المرحلة الأولى' }];
+}
+
+export function getWorkspaceStageNames(
+  ws?: Pick<Workspace, 'stages' | 'grades' | 'stageConfig' | 'className'> | null
+): string[] {
+  return getWorkspaceStages(ws).map((s) => s.name);
 }
 
 export function formatArabicTime(isoDate: string): string {

@@ -113,6 +113,17 @@ export async function trySignInAnonymously(): Promise<{ uid: string | null; prov
   }
 }
 
+export async function getCurrentOwnerFirebaseIdToken(): Promise<string | null> {
+  try {
+    if (auth.currentUser && !auth.currentUser.isAnonymous) {
+      return await auth.currentUser.getIdToken();
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 export async function signOutFirebase(): Promise<void> {
   try {
     await signOut(auth);
@@ -142,6 +153,7 @@ export async function syncWorkspaceBrandingToFirestore(workspace: Workspace): Pr
     className: workspace.className,
     stageConfig: workspace.stageConfig,
     grades: workspace.grades,
+    stages: workspace.stages || workspace.grades.map((name, idx) => ({ id: `stg_${idx + 1}`, name })),
     logoUrl: workspace.logoUrl,
     verse: workspace.verse,
     updatedAt: workspace.updatedAt,
