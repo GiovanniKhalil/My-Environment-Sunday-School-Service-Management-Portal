@@ -15,7 +15,7 @@ import type {
   SessionUser,
   WorkspaceBundle,
 } from '../../types';
-import { apiFetch, buildWhatsAppUrl, formatArabicDate } from '../../utils/api';
+import { apiFetch, buildWhatsAppUrl, formatArabicDate, resolveLogoUrl } from '../../utils/api';
 
 interface StudentPortalProps {
   bundle: WorkspaceBundle;
@@ -117,7 +117,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
           <section className="bg-[#7A1523] text-white rounded-3xl p-6 sm:p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
             <div className="flex items-start gap-4">
               <img
-                src={workspace.logoUrl || '/src/assets/images/coptic_platform_emblem_1795619749170.jpg'}
+                src={resolveLogoUrl(workspace.logoUrl)}
                 alt={workspace.className}
                 referrerPolicy="no-referrer"
                 className="w-16 h-16 rounded-2xl object-cover border-2 border-[#D4AF37] bg-[#FFFDF9] shrink-0"

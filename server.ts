@@ -1529,6 +1529,94 @@ export function createApp() {
   );
 
   app.post(
+    '/api/workspaces/:workspaceId/visitations/reset-statuses',
+    requireAuth,
+    requireWorkspaceAccess(['environment_owner', 'head_servant', 'assistant_head', 'servant']),
+    (req: AuthedRequest, res: Response) => {
+      const workspaceId = String(req.params.workspaceId || '');
+      const ws = dbStore.getState().workspaces[workspaceId];
+      const nowIso = new Date().toISOString();
+      const weekLabel = typeof req.body?.weekLabel === 'string' ? req.body.weekLabel.trim().slice(0, 64) : '';
+      for (const vis of ws.visitationSchedules) {
+        vis.status = 'pending';
+        vis.lastUpdatedAt = nowIso;
+        if (weekLabel) vis.weekLabel = weekLabel;
+      }
+      dbStore.save();
+      res.json({ visitations: ws.visitationSchedules });
+    }
+  );
+
+  app.post(
+    '/api/workspaces/:workspaceId/visitations/bulk-assign',
+    requireAuth,
+    requireWorkspaceAccess(['environment_owner', 'head_servant', 'assistant_head', 'servant']),
+    (req: AuthedRequest, res: Response) => {
+      const workspaceId = String(req.params.workspaceId || '');
+      const ws = dbStore.getState().workspaces[workspaceId];
+      const { servantId, studentIds, weekLabel } = req.body as {
+        servantId?: string;
+        studentIds?: unknown;
+        weekLabel?: string;
+      };
+      const srv = ws.servants.find((s) => s.id === servantId);
+      if (!srv || !Array.isArray(studentIds)) {
+        res.status(400).json({ error: 'يرجى تحديد الخادم وقائمة المخدومين بشكل صحيح.' });
+        return;
+      }
+      const validStudentIds = new Set(ws.students.map((s) => s.id));
+      const selectedSet = new Set(
+        studentIds.map((id) => String(id)).filter((id) => validStudentIds.has(id))
+      );
+      const nowIso = new Date().toISOString();
+      const cleanWeekLabel =
+        typeof weekLabel === 'string' && weekLabel.trim()
+          ? weekLabel.trim().slice(0, 64)
+          : 'الأسبوع الحالي';
+
+      // Remove students previously assigned to this servant that were unchecked
+      ws.visitationSchedules = ws.visitationSchedules.filter(
+        (v) => v.servantId !== srv.id || selectedSet.has(v.studentId)
+      );
+
+      // Assign or reassign selected students to this servant
+      for (const stuId of selectedSet) {
+        const stu = ws.students.find((s) => s.id === stuId);
+        if (!stu) continue;
+        const existing = ws.visitationSchedules.find((v) => v.studentId === stuId);
+        if (existing) {
+          existing.servantId = srv.id;
+          existing.servantName = srv.fullName;
+          existing.studentName = stu.fullName;
+          existing.studentGrade = stu.grade;
+          existing.studentPhone = stu.phone;
+          existing.parentPhone = stu.parentPhone;
+          existing.lastUpdatedAt = nowIso;
+        } else {
+          ws.visitationSchedules.push({
+            id: sanitizeId('vis'),
+            workspaceId,
+            studentId: stu.id,
+            studentName: stu.fullName,
+            studentGrade: stu.grade,
+            studentPhone: stu.phone,
+            parentPhone: stu.parentPhone,
+            servantId: srv.id,
+            servantName: srv.fullName,
+            status: 'pending',
+            weekLabel: cleanWeekLabel,
+            notes: '',
+            lastUpdatedAt: nowIso,
+          });
+        }
+      }
+
+      dbStore.save();
+      res.json({ visitations: ws.visitationSchedules });
+    }
+  );
+
+  app.post(
     '/api/workspaces/:workspaceId/visitations',
     requireAuth,
     requireWorkspaceAccess(['environment_owner', 'head_servant', 'assistant_head', 'servant']),

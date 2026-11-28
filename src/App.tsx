@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { SessionUser, Workspace } from './types';
-import { apiFetch, clearSessionToken } from './utils/api';
+import { apiFetch, clearSessionToken, DEFAULT_PLATFORM_EMBLEM } from './utils/api';
 import { signOutFirebase, testConnection } from './firebase';
 import { LoginPortal } from './components/LoginPortal';
 import { OwnerDashboard } from './components/OwnerDashboard';
@@ -61,9 +61,8 @@ export default function App() {
       <div className="min-h-screen bg-[#FAF7F2] text-[#2C1813] flex items-center justify-center p-6">
         <div className="text-center space-y-3">
           <img
-            src="/src/assets/images/coptic_platform_emblem_1795619749170.jpg"
+            src={DEFAULT_PLATFORM_EMBLEM}
             alt="شعار منصة مدارس الأحد"
-            referrerPolicy="no-referrer"
             className="w-16 h-16 rounded-2xl mx-auto object-cover border border-[#EAE0D5]"
           />
           <p className="text-sm font-bold text-[#755953]">جاري تجهيز منصة خدمات مدارس الأحد...</p>

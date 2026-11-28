@@ -21,6 +21,7 @@ import {
   buildWhatsAppUrl,
   exportAttendanceToExcel,
   formatArabicDate,
+  resolveLogoUrl,
 } from '../../utils/api';
 
 interface ServantDashboardProps {
@@ -221,7 +222,7 @@ export const ServantDashboard: React.FC<ServantDashboardProps> = ({
       <section className="bg-[#FFFDF9] border border-[#EAE0D5] rounded-3xl p-6 sm:p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
         <div className="flex items-start gap-4">
           <img
-            src={workspace.logoUrl || '/src/assets/images/coptic_platform_emblem_1795619749170.jpg'}
+            src={resolveLogoUrl(workspace.logoUrl)}
             alt={workspace.className}
             referrerPolicy="no-referrer"
             className="w-16 h-16 rounded-2xl object-cover border border-[#EAE0D5] bg-[#FAF6EE] shrink-0"

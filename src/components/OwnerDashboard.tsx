@@ -24,9 +24,11 @@ import type {
 import {
   apiFetch,
   compressImageToDataUrl,
+  DEFAULT_PLATFORM_EMBLEM,
   formatArabicDate,
+  resolveLogoUrl,
 } from '../utils/api';
-import { syncWorkspaceToFirestore } from '../firebase';
+import { fetchFirestoreWorkspaceLogos, syncWorkspaceToFirestore } from '../firebase';
 import { UnifiedChatHub } from './UnifiedChatHub';
 
 interface OwnerDashboardProps {
@@ -60,7 +62,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
     churchName: '',
     className: '',
     stageConfig: 'أولى ابتدائي، تانية ابتدائي',
-    logoUrl: '/src/assets/images/coptic_platform_emblem_1795619749170.jpg',
+    logoUrl: DEFAULT_PLATFORM_EMBLEM,
     verse: '«اخْدِمُوا الرَّبَّ بِفَرَحٍ، ادْخُلُوا إِلَى حَضْرَتِهِ بِتَرَنُّمٍ» (مز ١٠٠: ٢)',
     headFullName: '',
     headUsername: '',
@@ -71,12 +73,22 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
   const loadOverview = async () => {
     try {
       setLoading(true);
-      const res = await apiFetch<{
-        workspaces: Workspace[];
-        applicants: SessionUser[];
-        chatChannels: EnvironmentChatChannel[];
-      }>('/api/owner/overview');
-      setWorkspaces(res.workspaces);
+      const [res, firestoreLogos] = await Promise.all([
+        apiFetch<{
+          workspaces: Workspace[];
+          applicants: SessionUser[];
+          chatChannels: EnvironmentChatChannel[];
+        }>('/api/owner/overview'),
+        fetchFirestoreWorkspaceLogos(),
+      ]);
+      const mergedWorkspaces = res.workspaces.map((ws) => {
+        const fsLogo = firestoreLogos[ws.id];
+        if (fsLogo && (!ws.logoUrl || !ws.logoUrl.startsWith('data:image/'))) {
+          return { ...ws, logoUrl: fsLogo };
+        }
+        return ws;
+      });
+      setWorkspaces(mergedWorkspaces);
       setApplicants(res.applicants);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'تعذر تحميل لوحة تحكم المنصة.');
@@ -96,7 +108,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
       churchName: '',
       className: '',
       stageConfig: 'أولى ابتدائي، تانية ابتدائي',
-      logoUrl: '/src/assets/images/coptic_platform_emblem_1795619749170.jpg',
+      logoUrl: DEFAULT_PLATFORM_EMBLEM,
       verse: '«اخْدِمُوا الرَّبَّ بِفَرَحٍ، ادْخُلُوا إِلَى حَضْرَتِهِ بِتَرَنُّمٍ» (مز ١٠٠: ٢)',
       headFullName: '',
       headUsername: '',
@@ -113,7 +125,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
       churchName: applicant.proposedChurchName || '',
       className: applicant.proposedClassName || '',
       stageConfig: applicant.proposedStageConfig || 'مرحلة مخصصة',
-      logoUrl: '/src/assets/images/coptic_platform_emblem_1795619749170.jpg',
+      logoUrl: DEFAULT_PLATFORM_EMBLEM,
       verse: '«اخْدِمُوا الرَّبَّ بِفَرَحٍ، ادْخُلُوا إِلَى حَضْرَتِهِ بِتَرَنُّمٍ» (مز ١٠٠: ٢)',
       headFullName: applicant.fullName,
       headUsername: applicant.username,
@@ -134,7 +146,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
       churchName: channel.churchName || '',
       className: channel.className || '',
       stageConfig: 'مرحلة مخصصة',
-      logoUrl: '/src/assets/images/coptic_platform_emblem_1795619749170.jpg',
+      logoUrl: DEFAULT_PLATFORM_EMBLEM,
       verse: '«اخْدِمُوا الرَّبَّ بِفَرَحٍ، ادْخُلُوا إِلَى حَضْرَتِهِ بِتَرَنُّمٍ» (مز ١٠٠: ٢)',
       headFullName: channel.participantName || '',
       headUsername: '',
@@ -148,7 +160,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      const compressed = await compressImageToDataUrl(file, 280, 0.8);
+      const compressed = await compressImageToDataUrl(file, 280, 0.8, 58 * 1024);
       setWizardForm((prev) => ({ ...prev, logoUrl: compressed }));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'تعذر ضغط الشعار.');
@@ -172,7 +184,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
           grades,
         }),
       });
-      void syncWorkspaceToFirestore(res.workspace).catch(() => {});
+      await syncWorkspaceToFirestore(res.workspace).catch(() => {});
       setShowWizard(false);
       setBannerMsg(`تم إنشاء وتدشين مساحة «${res.workspace.className}» بنجاح.`);
       await loadOverview();
@@ -242,9 +254,8 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-6">
           <div className="flex items-center gap-3 shrink-0">
             <img
-              src="/src/assets/images/coptic_platform_emblem_1795619749170.jpg"
+              src={DEFAULT_PLATFORM_EMBLEM}
               alt="شعار المنصة"
-              referrerPolicy="no-referrer"
               className="w-9 h-9 rounded-xl object-cover border border-[#EAE0D5]"
             />
             <span className="font-extrabold text-base text-[#2C1813] whitespace-nowrap">
@@ -447,7 +458,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex items-center gap-3 min-w-0">
                           <img
-                            src={ws.logoUrl || '/src/assets/images/coptic_platform_emblem_1795619749170.jpg'}
+                            src={resolveLogoUrl(ws.logoUrl)}
                             alt={ws.className}
                             referrerPolicy="no-referrer"
                             className="w-12 h-12 rounded-xl object-cover border border-[#EAE0D5] shrink-0 bg-[#FAF6EE]"

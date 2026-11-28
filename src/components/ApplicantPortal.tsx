@@ -1,6 +1,7 @@
 import React from 'react';
 import { Church, Clock, LogOut, MessageSquare, Sparkles } from 'lucide-react';
 import type { SessionUser } from '../types';
+import { DEFAULT_PLATFORM_EMBLEM } from '../utils/api';
 import { UnifiedChatHub } from './UnifiedChatHub';
 
 interface ApplicantPortalProps {
@@ -22,9 +23,8 @@ export const ApplicantPortal: React.FC<ApplicantPortalProps> = ({ user, onLogout
         <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-6">
           <div className="flex items-center gap-3">
             <img
-              src="/src/assets/images/coptic_platform_emblem_1795619749170.jpg"
+              src={DEFAULT_PLATFORM_EMBLEM}
               alt="شعار المنصة"
-              referrerPolicy="no-referrer"
               className="w-9 h-9 rounded-xl object-cover border border-[#EAE0D5]"
             />
             <span className="font-extrabold text-base text-[#2C1813] whitespace-nowrap">

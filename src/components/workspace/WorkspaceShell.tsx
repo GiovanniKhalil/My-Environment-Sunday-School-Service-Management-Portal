@@ -6,7 +6,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import type { SessionUser, Workspace, WorkspaceBundle } from '../../types';
-import { apiFetch } from '../../utils/api';
+import { apiFetch, resolveLogoUrl } from '../../utils/api';
 import { StudentPortal } from './StudentPortal';
 import { ServantDashboard } from './ServantDashboard';
 import { MakhdoumeenTab } from './MakhdoumeenTab';
@@ -94,7 +94,7 @@ export const WorkspaceShell: React.FC<WorkspaceShellProps> = ({
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-6">
           <div className="flex items-center gap-3 min-w-0">
             <img
-              src={activeWorkspace.logoUrl || '/src/assets/images/coptic_platform_emblem_1795619749170.jpg'}
+              src={resolveLogoUrl(activeWorkspace.logoUrl)}
               alt={activeWorkspace.className}
               referrerPolicy="no-referrer"
               className="w-9 h-9 rounded-xl object-cover border border-[#EAE0D5] shrink-0"

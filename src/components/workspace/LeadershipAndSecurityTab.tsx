@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Check,
   KeyRound,
@@ -15,14 +15,18 @@ import {
 import type {
   Servant,
   SessionUser,
+  Workspace,
   WorkspaceBundle,
 } from '../../types';
 import {
   apiFetch,
   buildWhatsAppUrl,
   compressImageToDataUrl,
+  DEFAULT_PLATFORM_EMBLEM,
   formatArabicDate,
+  resolveLogoUrl,
 } from '../../utils/api';
+import { syncWorkspaceBrandingToFirestore } from '../../firebase';
 import { UnifiedChatHub } from '../UnifiedChatHub';
 
 interface LeadershipAndSecurityTabProps {
@@ -74,8 +78,18 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
     className: workspace.className,
     stageConfig: workspace.grades.join('، '),
     verse: workspace.verse,
-    logoUrl: workspace.logoUrl,
+    logoUrl: resolveLogoUrl(workspace.logoUrl),
   });
+
+  useEffect(() => {
+    setBrandingForm({
+      churchName: workspace.churchName,
+      className: workspace.className,
+      stageConfig: workspace.grades.join('، '),
+      verse: workspace.verse,
+      logoUrl: resolveLogoUrl(workspace.logoUrl),
+    });
+  }, [workspace]);
 
   const handleAddServant = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -151,7 +165,7 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
         .split(/[،,/]+/)
         .map((g) => g.trim())
         .filter(Boolean);
-      await apiFetch(`/api/workspaces/${workspace.id}/settings`, {
+      const res = await apiFetch<{ workspace: Workspace }>(`/api/workspaces/${workspace.id}/settings`, {
         method: 'PATCH',
         body: JSON.stringify({
           churchName: brandingForm.churchName,
@@ -162,7 +176,8 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
           logoUrl: brandingForm.logoUrl,
         }),
       });
-      setFeedback('تم تحديث هوية وشعار الفصل بنجاح.');
+      await syncWorkspaceBrandingToFirestore(res.workspace).catch(() => {});
+      setFeedback('تم تحديث هوية وشعار الفصل وحفظهما سحابياً بنجاح.');
       await onRefresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'تعذر تحديث الإعدادات.');
@@ -172,8 +187,13 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
   const handleLogoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const compressed = await compressImageToDataUrl(file, 280, 0.8);
-    setBrandingForm((prev) => ({ ...prev, logoUrl: compressed }));
+    setError('');
+    try {
+      const compressed = await compressImageToDataUrl(file, 280, 0.8, 58 * 1024);
+      setBrandingForm((prev) => ({ ...prev, logoUrl: compressed }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'تعذر ضغط الشعار.');
+    }
   };
 
   const pendingChangesCount = changeRequests.filter((c) => c.status === 'pending').length;
@@ -503,18 +523,27 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
             إعدادات هوية الفصل والشعار
           </h3>
           <form onSubmit={handleSaveBranding} className="space-y-4">
-            <div className="flex items-center gap-4 p-4 rounded-2xl bg-[#FAF6EE] border border-[#EAE0D5]">
+            <div className="flex flex-wrap items-center gap-4 p-4 rounded-2xl bg-[#FAF6EE] border border-[#EAE0D5]">
               <img
-                src={brandingForm.logoUrl || '/src/assets/images/coptic_platform_emblem_1795619749170.jpg'}
+                src={resolveLogoUrl(brandingForm.logoUrl)}
                 alt="شعار الفصل"
                 referrerPolicy="no-referrer"
-                className="w-16 h-16 rounded-2xl object-cover border border-[#EAE0D5]"
+                className="w-16 h-16 rounded-2xl object-cover border border-[#EAE0D5] bg-[#FFFDF9]"
               />
-              <label className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#FFFDF9] border border-[#EAE0D5] text-xs font-bold cursor-pointer">
-                <Upload className="w-4 h-4 text-[#7A1523]" />
-                تغيير الشعار
-                <input type="file" accept="image/*" onChange={handleLogoChange} className="hidden" />
-              </label>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#FFFDF9] border border-[#EAE0D5] hover:border-[#7A1523] text-xs font-bold cursor-pointer">
+                  <Upload className="w-4 h-4 text-[#7A1523]" />
+                  تغيير الشعار
+                  <input type="file" accept="image/*" onChange={handleLogoChange} className="hidden" />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setBrandingForm((prev) => ({ ...prev, logoUrl: DEFAULT_PLATFORM_EMBLEM }))}
+                  className="px-3 py-2 rounded-xl border border-[#EAE0D5] bg-[#FFFDF9] hover:bg-[#FBF2D8]/60 text-xs font-bold text-[#755953] cursor-pointer"
+                >
+                  استعادة الشعار الافتراضي
+                </button>
+              </div>
             </div>
             <div>
               <label className="block text-xs font-bold mb-1">اسم الكنيسة</label>

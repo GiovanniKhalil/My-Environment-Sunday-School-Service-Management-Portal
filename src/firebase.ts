@@ -7,10 +7,13 @@ import {
   signOut,
 } from 'firebase/auth';
 import {
+  collection,
   doc,
   getDocFromServer,
+  getDocs,
   getFirestore,
   setDoc,
+  updateDoc,
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 import type { Workspace } from './types';
@@ -128,5 +131,50 @@ export async function syncWorkspaceToFirestore(workspace: Workspace): Promise<vo
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function syncWorkspaceBrandingToFirestore(workspace: Workspace): Promise<void> {
+  if (!auth.currentUser) return;
+  const ref = doc(db, 'workspaces', workspace.id);
+  const patch = {
+    churchName: workspace.churchName,
+    className: workspace.className,
+    stageConfig: workspace.stageConfig,
+    grades: workspace.grades,
+    logoUrl: workspace.logoUrl,
+    verse: workspace.verse,
+    updatedAt: workspace.updatedAt,
+  };
+  try {
+    await updateDoc(ref, patch);
+  } catch {
+    if (!auth.currentUser.isAnonymous) {
+      try {
+        await setDoc(ref, {
+          ...workspace,
+          ownerUid: auth.currentUser.uid,
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.WRITE, `workspaces/${workspace.id}`);
+      }
+    }
+  }
+}
+
+export async function fetchFirestoreWorkspaceLogos(): Promise<Record<string, string>> {
+  if (!auth.currentUser || auth.currentUser.isAnonymous) return {};
+  try {
+    const snap = await getDocs(collection(db, 'workspaces'));
+    const map: Record<string, string> = {};
+    snap.forEach((d) => {
+      const data = d.data() as Partial<Workspace>;
+      if (data.id && typeof data.logoUrl === 'string' && data.logoUrl.startsWith('data:image/')) {
+        map[data.id] = data.logoUrl;
+      }
+    });
+    return map;
+  } catch {
+    return {};
   }
 }

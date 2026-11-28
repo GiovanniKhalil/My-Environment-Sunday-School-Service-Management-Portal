@@ -12,7 +12,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import type { SessionUser, Workspace } from '../types';
-import { apiFetch, setSessionToken } from '../utils/api';
+import { apiFetch, DEFAULT_PLATFORM_EMBLEM, setSessionToken } from '../utils/api';
 import { signInOwnerWithGoogle, trySignInAnonymously } from '../firebase';
 
 interface LoginPortalProps {
@@ -187,9 +187,8 @@ export const LoginPortal: React.FC<LoginPortalProps> = ({
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-6">
           <div className="flex items-center gap-3 shrink-0">
             <img
-              src="/src/assets/images/coptic_platform_emblem_1795619749170.jpg"
+              src={DEFAULT_PLATFORM_EMBLEM}
               alt="شعار منصة مدارس الأحد"
-              referrerPolicy="no-referrer"
               className="w-9 h-9 rounded-xl object-cover border border-[#EAE0D5]"
             />
             <span className="font-extrabold text-base sm:text-lg text-[#2C1813] whitespace-nowrap">
