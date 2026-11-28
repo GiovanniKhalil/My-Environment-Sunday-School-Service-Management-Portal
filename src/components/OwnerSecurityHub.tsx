@@ -25,10 +25,12 @@ import {
 import {
   addServantInFirestore,
   generateSecureTempPassword,
+  getOwnerCredentialsInFirestore,
   type OwnerLeaderAccountItem,
   resetWorkspaceAccountPasswordInFirestore,
   subscribeOwnerLeaderAccounts,
   subscribeWorkspaceAccounts,
+  updateOwnerCredentialsInFirestore,
   updateWorkspaceAccountUsernameInFirestore,
 } from '../services/firestoreService';
 import { AccountsSecurityPanel } from './AccountsSecurityPanel';
@@ -59,6 +61,52 @@ export const OwnerSecurityHub: React.FC<OwnerSecurityHubProps> = ({
   const [leaderSearch, setLeaderSearch] = useState('');
   const [feedback, setFeedback] = useState('');
   const [error, setError] = useState('');
+
+  // Environment Owner Profile state
+  const [ownerUsername, setOwnerUsername] = useState('owner');
+  const [ownerHasPassword, setOwnerHasPassword] = useState(false);
+  const [editingOwner, setEditingOwner] = useState(false);
+  const [ownerUsernameInput, setOwnerUsernameInput] = useState('');
+  const [ownerPasswordInput, setOwnerPasswordInput] = useState('');
+  const [savingOwner, setSavingOwner] = useState(false);
+  const [ownerIssuedPass, setOwnerIssuedPass] = useState('');
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const info = await getOwnerCredentialsInFirestore();
+        setOwnerUsername(info.username);
+        setOwnerHasPassword(info.hasPassword);
+        setOwnerUsernameInput(info.username);
+      } catch {
+        // ignore
+      }
+    })();
+  }, []);
+
+  const handleSaveOwnerCredentials = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setSavingOwner(true);
+    try {
+      const cleanUser = ownerUsernameInput.trim();
+      const cleanPass = ownerPasswordInput.trim();
+      if (!cleanUser || cleanPass.length < 4) {
+        throw new Error('يرجى إدخال اسم المستخدم وكلمة مرور (4 أحرف فأكثر).');
+      }
+      await updateOwnerCredentialsInFirestore(cleanUser, cleanPass);
+      setOwnerUsername(cleanUser);
+      setOwnerHasPassword(true);
+      setOwnerIssuedPass(cleanPass);
+      setEditingOwner(false);
+      setOwnerPasswordInput('');
+      setFeedback('تم تحديث بيانات دخول صاحب المنصة وتشفير كلمة المرور بخوارزمية SHA-256 بنجاح.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'تعذر تحديث بيانات صاحب المنصة.');
+    } finally {
+      setSavingOwner(false);
+    }
+  };
 
   // Inline password reset & username edit in Tab 1
   const [resetTargetId, setResetTargetId] = useState('');
@@ -378,6 +426,128 @@ export const OwnerSecurityHub: React.FC<OwnerSecurityHubProps> = ({
       {/* TAB 1: Unified Class Leaders & Assistants Directory */}
       {subTab === 'leaders' && (
         <div className="space-y-4">
+          {/* Pinned Environment Owner Profile Card */}
+          <div className="bg-gradient-to-l from-[#FAF6EE] to-[#FFFDF9] border border-[#D4AF37]/50 rounded-2xl p-5 sm:p-6 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-[#7A1523] text-white flex items-center justify-center font-black text-lg shadow-sm">
+                  👑
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="font-extrabold text-base sm:text-lg text-[#2C1813]">
+                      حساب صاحب المنصة الرئيسي (Environment Owner)
+                    </h2>
+                    <span className="px-2 py-0.5 rounded-md bg-[#7A1523] text-white text-[10px] font-bold">
+                      Super Admin
+                    </span>
+                  </div>
+                  <p className="text-xs text-[#755953] font-mono mt-0.5">
+                    {currentUser.email || 'jovanni.ayman@gmail.com'} · الدخول المزدوج (Google + اسم المستخدم وكلمة مرور SHA-256)
+                  </p>
+                </div>
+              </div>
+
+              {!editingOwner && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingOwner(true);
+                    setOwnerUsernameInput(ownerUsername);
+                    setOwnerPasswordInput('');
+                  }}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#7A1523] hover:bg-[#620F1B] text-white text-xs font-bold cursor-pointer whitespace-nowrap"
+                >
+                  <KeyRound className="w-4 h-4" />
+                  تعديل اسم المستخدم وكلمة المرور
+                </button>
+              )}
+            </div>
+
+            {!editingOwner ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-3 border-t border-[#EAE0D5] text-xs">
+                <div>
+                  <span className="text-[#755953] block">اسم المستخدم المخصص للدخول:</span>
+                  <strong className="text-[#2C1813] font-mono text-sm mt-0.5 block">
+                    {ownerUsername}
+                  </strong>
+                </div>
+                <div>
+                  <span className="text-[#755953] block">حالة كلمة المرور المشفرة (SHA-256):</span>
+                  <span
+                    className={`font-bold mt-0.5 block ${
+                      ownerHasPassword ? 'text-emerald-700' : 'text-[#A46714]'
+                    }`}
+                  >
+                    {ownerHasPassword ? 'مفعلة ومشفرة بنجاح' : 'غير مسجلة (يُرجى تعيين كلمة مرور)'}
+                  </span>
+                  {ownerIssuedPass && (
+                    <span className="text-[11px] font-mono text-[#2C1813] mt-1 block">
+                      كلمة المرور المؤقتة الحالية: <strong>{ownerIssuedPass}</strong>
+                    </span>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleSaveOwnerCredentials} className="space-y-4 pt-3 border-t border-[#EAE0D5]">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold mb-1">اسم المستخدم (Username)</label>
+                    <input
+                      type="text"
+                      required
+                      dir="ltr"
+                      value={ownerUsernameInput}
+                      onChange={(e) => setOwnerUsernameInput(e.target.value)}
+                      placeholder="owner"
+                      className="w-full bg-[#FFFDF9] border border-[#EAE0D5] rounded-xl px-3.5 py-2.5 text-sm font-mono text-left focus:outline-none focus:border-[#7A1523]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold mb-1">كلمة المرور الجديدة (SHA-256)</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        required
+                        minLength={4}
+                        dir="ltr"
+                        value={ownerPasswordInput}
+                        onChange={(e) => setOwnerPasswordInput(e.target.value)}
+                        placeholder="أدخل كلمة مرور قوية"
+                        className="w-full bg-[#FFFDF9] border border-[#EAE0D5] rounded-xl px-3.5 py-2.5 text-sm font-mono text-left focus:outline-none focus:border-[#7A1523]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setOwnerPasswordInput(generateSecureTempPassword(10))}
+                        className="p-2.5 rounded-xl border border-[#EAE0D5] bg-[#FFFDF9] hover:bg-[#FAF6EE] text-[#A46714] cursor-pointer shrink-0"
+                        title="توليد كلمة مرور قوية"
+                      >
+                        <Shuffle className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingOwner(false)}
+                    className="px-4 py-2 rounded-xl border border-[#EAE0D5] text-xs font-bold text-[#755953] cursor-pointer"
+                  >
+                    إلغاء
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingOwner}
+                    className="px-5 py-2 rounded-xl bg-[#7A1523] text-white text-xs font-bold cursor-pointer"
+                  >
+                    {savingOwner ? 'جاري الحفظ والتشفير...' : 'حفظ وتشفير (SHA-256)'}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
             <div className="bg-[#FFFDF9] border border-[#EAE0D5] rounded-2xl p-4">
               <p className="text-xs font-semibold text-[#755953]">إجمالي حسابات القيادة</p>

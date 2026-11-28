@@ -16,6 +16,7 @@ import heroChurchImg from '../assets/images/hero_church_sanctuary_1795619749074.
 import {
   loginWithCredentials,
   loginWithGoogleOwner,
+  loginOwnerWithUsernamePasswordInFirestore,
   registerApplicantInFirestore,
   resetPasswordWithPhoneInFirestore,
 } from '../services/firestoreService';
@@ -65,10 +66,19 @@ export const LoginPortal: React.FC<LoginPortalProps> = ({
     setSuccessMsg('');
     setLoading(true);
     try {
-      const { user, workspace } = await loginWithCredentials(username, password);
-      onAuthenticated(user, workspace);
+      // Try logging in as Environment Owner first
+      try {
+        const ownerUser = await loginOwnerWithUsernamePasswordInFirestore(username, password);
+        onAuthenticated(ownerUser, null);
+        return;
+      } catch (ownerErr) {
+        // If owner login fails, try normal workspace login
+        const { user, workspace } = await loginWithCredentials(username, password);
+        onAuthenticated(user, workspace);
+        return;
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'تعذر تسجيل الدخول.');
+      setError(err instanceof Error ? err.message : 'تعذر تسجيل الدخول. يرجى التحقق من اسم المستخدم وكلمة المرور.');
     } finally {
       setLoading(false);
     }

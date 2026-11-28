@@ -299,6 +299,103 @@ export async function loginWithGoogleOwner(): Promise<SessionUser> {
   return ensureOwnerBootstrapInFirestore(user);
 }
 
+export interface OwnerCredentialsDoc {
+  username: string;
+  salt: string;
+  passwordHash: string;
+  claimVerifier: string;
+  updatedAt: string;
+}
+
+export async function getOwnerCredentialsInFirestore(): Promise<{
+  username: string;
+  hasPassword: boolean;
+}> {
+  try {
+    const snap = await getDoc(doc(db, 'system_config', 'owner_credentials'));
+    if (!snap.exists()) {
+      return { username: 'owner', hasPassword: false };
+    }
+    const data = snap.data() as OwnerCredentialsDoc;
+    return {
+      username: data.username || 'owner',
+      hasPassword: Boolean(data.passwordHash && data.salt),
+    };
+  } catch {
+    return { username: 'owner', hasPassword: false };
+  }
+}
+
+export async function updateOwnerCredentialsInFirestore(
+  username: string,
+  password: string
+): Promise<void> {
+  const cleanUser = username.trim();
+  const cleanPass = String(password || '').trim();
+  if (!cleanUser || cleanPass.length < 4) {
+    throw new Error('يرجى إدخال اسم مستخدم صحيح وكلمة مرور (4 أحرف فأكثر).');
+  }
+
+  const salt = randomSalt();
+  const passwordHash = await sha256Hex(`${salt}:${cleanPass}`);
+  const claimProof = await sha256Hex(`${salt}:${cleanPass}:claim:owner_root`);
+  const claimVerifier = await sha256Hex(claimProof);
+  const nowIso = new Date().toISOString();
+
+  try {
+    await setDoc(doc(db, 'system_config', 'owner_credentials'), {
+      username: cleanUser,
+      salt,
+      passwordHash,
+      claimVerifier,
+      updatedAt: nowIso,
+    });
+    await updateDoc(doc(db, 'globalUsers', 'owner_root'), {
+      username: cleanUser,
+      updatedAt: nowIso,
+    }).catch(() => {});
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'system_config/owner_credentials');
+  }
+}
+
+export async function loginOwnerWithUsernamePasswordInFirestore(
+  username: string,
+  password: string
+): Promise<SessionUser> {
+  const cleanUser = username.trim();
+  const cleanPass = String(password || '');
+  if (!cleanUser || !cleanPass) {
+    throw new Error('يرجى إدخال اسم المستخدم وكلمة المرور لصاحب المنصة.');
+  }
+
+  let credsDoc: OwnerCredentialsDoc | null = null;
+  try {
+    const snap = await getDoc(doc(db, 'system_config', 'owner_credentials'));
+    if (!snap.exists()) {
+      throw new Error(
+        'لم يتم تعيين اسم مستخدم أو كلمة مرور لصاحب المنصة بعد. يرجى الدخول عبر حساب Google أولاً.'
+      );
+    }
+    credsDoc = snap.data() as OwnerCredentialsDoc;
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('لم يتم تعيين')) throw err;
+    handleFirestoreError(err, OperationType.GET, 'system_config/owner_credentials');
+  }
+
+  if (!credsDoc || credsDoc.username.toLowerCase() !== cleanUser.toLowerCase()) {
+    throw new Error('اسم المستخدم أو كلمة المرور غير صحيحة.');
+  }
+
+  const actualHash = await sha256Hex(`${credsDoc.salt}:${cleanPass}`);
+  if (actualHash !== credsDoc.passwordHash) {
+    throw new Error('اسم المستخدم أو كلمة المرور غير صحيحة.');
+  }
+
+  const fbUser = await ensureAnonymousFirebaseAuth();
+  return ensureOwnerBootstrapInFirestore(fbUser);
+}
+
 export async function restoreSessionFromFirebaseAuth(
   firebaseUser: User | null
 ): Promise<{ user: SessionUser | null; workspace: Workspace | null }> {
