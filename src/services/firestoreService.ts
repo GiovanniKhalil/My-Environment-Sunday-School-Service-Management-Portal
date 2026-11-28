@@ -369,6 +369,8 @@ export async function loginOwnerWithUsernamePasswordInFirestore(
     throw new Error('يرجى إدخال اسم المستخدم وكلمة المرور لصاحب المنصة.');
   }
 
+  await ensureAnonymousFirebaseAuth();
+
   let credsDoc: OwnerCredentialsDoc | null = null;
   try {
     const snap = await getDoc(doc(db, 'system_config', 'owner_credentials'));
