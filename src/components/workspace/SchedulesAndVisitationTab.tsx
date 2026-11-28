@@ -36,12 +36,21 @@ import type {
   WorkspaceStage,
 } from '../../types';
 import {
-  apiFetch,
   buildWhatsAppUrl,
   formatLiveArabicDate,
   getWorkspaceStageNames,
   getWorkspaceStages,
 } from '../../utils/api';
+import {
+  autoDistributeVisitationInFirestore,
+  bulkAssignVisitationInFirestore,
+  deleteMonthlyScheduleInFirestore,
+  pruneExpiredSchedulesInFirestore,
+  resetVisitationStatusesInFirestore,
+  saveMonthlyScheduleInFirestore,
+  swapMonthlyScheduleTeachersInFirestore,
+  updateVisitationInFirestore,
+} from '../../services/firestoreService';
 
 interface SchedulesAndVisitationTabProps {
   bundle: WorkspaceBundle;
@@ -276,9 +285,9 @@ export const SchedulesAndVisitationTab: React.FC<SchedulesAndVisitationTabProps>
       const firstWithTitle =
         schForm.stageLessons.find((sl) => sl.lessonTitle.trim()) || schForm.stageLessons[0];
 
-      await apiFetch(`/api/workspaces/${workspace.id}/schedules`, {
-        method: 'POST',
-        body: JSON.stringify({
+      await saveMonthlyScheduleInFirestore(
+        workspace.id,
+        {
           id: schForm.id,
           date: schForm.date,
           dateLabel: formatLiveArabicDate(schForm.date),
@@ -296,8 +305,9 @@ export const SchedulesAndVisitationTab: React.FC<SchedulesAndVisitationTabProps>
           segments: segmentsBool,
           segmentDetails: schForm.segmentDetails,
           notes: schForm.notes.trim(),
-        }),
-      });
+        },
+        monthlySchedules
+      );
       setShowScheduleModal(false);
       setFeedback('تم حفظ جدول الخدمة الأسبوعي بنجاح.');
       await onRefresh();
@@ -311,10 +321,9 @@ export const SchedulesAndVisitationTab: React.FC<SchedulesAndVisitationTabProps>
   const handleSwapTeachers = async (scheduleId: string, stageIndex = 0) => {
     setError('');
     try {
-      await apiFetch(`/api/workspaces/${workspace.id}/schedules/${scheduleId}/swap`, {
-        method: 'POST',
-        body: JSON.stringify({ stageIndex }),
-      });
+      const sch = monthlySchedules.find((s) => s.id === scheduleId);
+      if (!sch) return;
+      await swapMonthlyScheduleTeachersInFirestore(workspace.id, sch, stageIndex);
       setFeedback('تم تبديل الخادم الأساسي والاحتياطي بنقرة واحدة.');
       await onRefresh();
     } catch (err) {
@@ -325,10 +334,7 @@ export const SchedulesAndVisitationTab: React.FC<SchedulesAndVisitationTabProps>
   const handlePruneExpired = async () => {
     setError('');
     try {
-      await apiFetch(`/api/workspaces/${workspace.id}/schedules`, {
-        method: 'POST',
-        body: JSON.stringify({ pruneExpired: true }),
-      });
+      await pruneExpiredSchedulesInFirestore(workspace.id, monthlySchedules);
       setFeedback('تم تنظيف المواعيد المنتهية الأقدم من أسبوعين.');
       await onRefresh();
     } catch (err) {
@@ -339,9 +345,7 @@ export const SchedulesAndVisitationTab: React.FC<SchedulesAndVisitationTabProps>
   const handleDeleteSchedule = async (scheduleId: string) => {
     setError('');
     try {
-      await apiFetch(`/api/workspaces/${workspace.id}/schedules/${scheduleId}`, {
-        method: 'DELETE',
-      });
+      await deleteMonthlyScheduleInFirestore(workspace.id, scheduleId);
       await onRefresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'تعذر حذف اللقاء.');
@@ -353,10 +357,13 @@ export const SchedulesAndVisitationTab: React.FC<SchedulesAndVisitationTabProps>
     setSaving(true);
     setError('');
     try {
-      await apiFetch(`/api/workspaces/${workspace.id}/visitations/auto-distribute`, {
-        method: 'POST',
-        body: JSON.stringify({ weekLabel: 'الأسبوع الحالي' }),
-      });
+      await autoDistributeVisitationInFirestore(
+        workspace.id,
+        'الأسبوع الحالي',
+        students,
+        servants,
+        visitationSchedules
+      );
       setFeedback('تم التوزيع التلقائي المتوازن للافتقاد على جميع الخدام بنجاح.');
       await onRefresh();
     } catch (err) {
@@ -370,10 +377,11 @@ export const SchedulesAndVisitationTab: React.FC<SchedulesAndVisitationTabProps>
     setSaving(true);
     setError('');
     try {
-      await apiFetch(`/api/workspaces/${workspace.id}/visitations/reset-statuses`, {
-        method: 'POST',
-        body: JSON.stringify({ weekLabel: 'أسبوع جديد' }),
-      });
+      await resetVisitationStatusesInFirestore(
+        workspace.id,
+        'أسبوع جديد',
+        visitationSchedules
+      );
       setShowResetConfirm(false);
       setFeedback('تم تصفير جميع حالات المتابعة إلى «في الانتظار» مع الحفاظ على التوزيع الثابت.');
       await onRefresh();
@@ -392,10 +400,7 @@ export const SchedulesAndVisitationTab: React.FC<SchedulesAndVisitationTabProps>
     setSavingVisitId(visitId);
     setError('');
     try {
-      await apiFetch(`/api/workspaces/${workspace.id}/visitations`, {
-        method: 'POST',
-        body: JSON.stringify({ id: visitId, status, notes }),
-      });
+      await updateVisitationInFirestore(workspace.id, visitId, status, notes);
       await onRefresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'تعذر تحديث حالة الافتقاد.');
@@ -419,14 +424,14 @@ export const SchedulesAndVisitationTab: React.FC<SchedulesAndVisitationTabProps>
     setSaving(true);
     setError('');
     try {
-      await apiFetch(`/api/workspaces/${workspace.id}/visitations/bulk-assign`, {
-        method: 'POST',
-        body: JSON.stringify({
-          servantId: assignModalServant.id,
-          studentIds: assignSelectedStudentIds,
-          weekLabel: 'الأسبوع الحالي',
-        }),
-      });
+      await bulkAssignVisitationInFirestore(
+        workspace.id,
+        assignModalServant,
+        assignSelectedStudentIds,
+        'الأسبوع الحالي',
+        students,
+        visitationSchedules
+      );
       setFeedback(`تم تحديث قائمة المكلفين للخادم «${assignModalServant.fullName}» بنجاح.`);
       setAssignModalServant(null);
       await onRefresh();

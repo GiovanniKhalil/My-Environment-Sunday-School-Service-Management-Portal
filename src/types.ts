@@ -32,6 +32,7 @@ export interface Workspace {
   ownerUid: string;
   studentCount: number;
   servantCount: number;
+  customGroupIds?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -47,6 +48,7 @@ export interface GlobalUser {
   status: AccountStatus;
   mustChangePassword: boolean;
   linkedProfileId: string;
+  ownerUid?: string;
   proposedChurchName?: string;
   proposedClassName?: string;
   proposedStageConfig?: string;
@@ -67,6 +69,7 @@ export interface SessionUser {
   status: AccountStatus;
   mustChangePassword: boolean;
   linkedProfileId: string;
+  ownerUid?: string;
   proposedChurchName?: string;
   proposedClassName?: string;
   proposedStageConfig?: string;
@@ -263,8 +266,10 @@ export interface EnvironmentChatChannel {
   isBroadcast?: boolean;
   isCustomGroup?: boolean;
   memberIds?: string[];
+  memberUids?: string[];
   createdBy?: string;
   createdAt?: string;
+  participantUid?: string;
   participantUserId?: string;
   participantName?: string;
   participantRole?: UserRole;
@@ -290,12 +295,45 @@ export interface EnvironmentChatMessage {
   id: string;
   channelId: string;
   senderId: string;
+  senderUid?: string;
   senderName: string;
   senderRole: UserRole;
   senderWorkspaceName?: string;
   text: string;
   createdAt: string;
   isSystem?: boolean;
+}
+
+export interface LoginDirectoryEntry {
+  loginKey: string;
+  userId: string;
+  username: string;
+  role: Exclude<UserRole, 'environment_owner'>;
+  workspaceId: string;
+  fullName: string;
+  status: AccountStatus;
+  mustChangePassword: boolean;
+  linkedProfileId: string;
+  salt: string;
+  passwordHash: string;
+  claimVerifier: string;
+  phoneProofVerifier: string;
+  lastResetProof?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ActiveSession {
+  uid: string;
+  userId: string;
+  loginKey: string;
+  role: Exclude<UserRole, 'environment_owner'>;
+  workspaceId: string;
+  fullName: string;
+  linkedProfileId: string;
+  claimProof: string;
+  createdAt: string;
+  updatedAt?: string;
 }
 
 export interface WorkspaceBundle {

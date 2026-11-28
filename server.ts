@@ -876,7 +876,7 @@ export function createApp() {
       stageConfig: cleanStage,
       grades: effectiveGrades,
       stages: normalizedStages.stages,
-      logoUrl: logoUrl || '/src/assets/images/coptic_platform_emblem_1795619749170.jpg',
+      logoUrl: logoUrl || '',
       verse: cleanVerse,
       status: 'active',
       headServantId,

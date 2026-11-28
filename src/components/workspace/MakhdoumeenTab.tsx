@@ -18,13 +18,19 @@ import type {
   WorkspaceBundle,
 } from '../../types';
 import {
-  apiFetch,
   buildWhatsAppUrl,
   compressImageToDataUrl,
   getWorkspaceStageNames,
   parseStudentsSpreadsheet,
   type ImportedStudentRow,
 } from '../../utils/api';
+import {
+  addStudentInFirestore,
+  deleteStudentInFirestore,
+  importStudentsInFirestore,
+  runBatchStudentsActionInFirestore,
+  updateStudentInFirestore,
+} from '../../services/firestoreService';
 
 interface MakhdoumeenTabProps {
   bundle: WorkspaceBundle;
@@ -37,7 +43,7 @@ export const MakhdoumeenTab: React.FC<MakhdoumeenTabProps> = ({
   currentUser,
   onRefresh,
 }) => {
-  const { workspace, students } = bundle;
+  const { workspace, students, visitationSchedules } = bundle;
   const stageNames = useMemo(() => getWorkspaceStageNames(workspace), [workspace]);
   const isAdmin =
     currentUser.role === 'environment_owner' ||
@@ -103,10 +109,7 @@ export const MakhdoumeenTab: React.FC<MakhdoumeenTabProps> = ({
     setSaving(true);
     setError('');
     try {
-      await apiFetch(`/api/workspaces/${workspace.id}/students`, {
-        method: 'POST',
-        body: JSON.stringify(addForm),
-      });
+      await addStudentInFirestore(workspace.id, addForm, workspace);
       setShowAddModal(false);
       setAddForm({
         fullName: '',
@@ -145,12 +148,11 @@ export const MakhdoumeenTab: React.FC<MakhdoumeenTabProps> = ({
     setSaving(true);
     setError('');
     try {
-      const res = await apiFetch<{ importedCount: number; skippedCount: number }>(
-        `/api/workspaces/${workspace.id}/students/import`,
-        {
-          method: 'POST',
-          body: JSON.stringify({ rows: importRows }),
-        }
+      const res = await importStudentsInFirestore(
+        workspace.id,
+        importRows,
+        workspace,
+        students
       );
       setShowImportModal(false);
       setImportRows([]);
@@ -169,10 +171,7 @@ export const MakhdoumeenTab: React.FC<MakhdoumeenTabProps> = ({
     setSaving(true);
     setError('');
     try {
-      await apiFetch(`/api/workspaces/${workspace.id}/students/${selectedStudent.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify(selectedStudent),
-      });
+      await updateStudentInFirestore(workspace.id, selectedStudent);
       setSelectedStudent(null);
       setFeedback('تم تحديث بيانات المخدوم بنجاح.');
       await onRefresh();
@@ -191,7 +190,9 @@ export const MakhdoumeenTab: React.FC<MakhdoumeenTabProps> = ({
   };
 
   const handleDeleteStudent = async (studentId: string) => {
-    await apiFetch(`/api/workspaces/${workspace.id}/students/${studentId}`, { method: 'DELETE' });
+    const target = students.find((s) => s.id === studentId);
+    if (!target) return;
+    await deleteStudentInFirestore(workspace.id, target, students.length, visitationSchedules);
     setSelectedStudent(null);
     setFeedback('تم حذف ملف المخدوم.');
     await onRefresh();
@@ -202,15 +203,15 @@ export const MakhdoumeenTab: React.FC<MakhdoumeenTabProps> = ({
     setSaving(true);
     setError('');
     try {
-      await apiFetch(`/api/workspaces/${workspace.id}/batch`, {
-        method: 'POST',
-        body: JSON.stringify({
-          action: batchAction,
-          fromGrade: batchFromGrade,
-          toGrade: batchToGrade,
-          confirmKeyword: batchKeyword.trim(),
-        }),
-      });
+      await runBatchStudentsActionInFirestore(
+        workspace.id,
+        batchAction,
+        batchFromGrade,
+        batchToGrade,
+        batchKeyword.trim(),
+        students,
+        visitationSchedules
+      );
       setShowBatchModal(false);
       setBatchKeyword('');
       setFeedback('تم تنفيذ العملية الجماعية بنجاح.');

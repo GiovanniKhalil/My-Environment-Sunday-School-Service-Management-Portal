@@ -23,14 +23,20 @@ import type {
   WorkspaceStage,
 } from '../types';
 import {
-  apiFetch,
   compressImageToDataUrl,
   DEFAULT_PLATFORM_EMBLEM,
   formatArabicDate,
   getWorkspaceStageNames,
   resolveLogoUrl,
 } from '../utils/api';
-import { fetchFirestoreWorkspaceLogos, syncWorkspaceToFirestore } from '../firebase';
+import {
+  createWorkspaceInFirestore,
+  deleteWorkspaceCascadeInFirestore,
+  subscribeOwnerApplicants,
+  subscribeOwnerWorkspaces,
+  toggleWorkspaceStatusInFirestore,
+  updateApplicantStatusInFirestore,
+} from '../services/firestoreService';
 import { StageBuilder } from './StageBuilder';
 import { UnifiedChatHub } from './UnifiedChatHub';
 
@@ -79,35 +85,44 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
     headTempPassword: '',
   });
 
-  const loadOverview = async () => {
-    try {
-      setLoading(true);
-      const [res, firestoreLogos] = await Promise.all([
-        apiFetch<{
-          workspaces: Workspace[];
-          applicants: SessionUser[];
-          chatChannels: EnvironmentChatChannel[];
-        }>('/api/owner/overview'),
-        fetchFirestoreWorkspaceLogos(),
-      ]);
-      const mergedWorkspaces = res.workspaces.map((ws) => {
-        const fsLogo = firestoreLogos[ws.id];
-        if (fsLogo && (!ws.logoUrl || !ws.logoUrl.startsWith('data:image/'))) {
-          return { ...ws, logoUrl: fsLogo };
-        }
-        return ws;
-      });
-      setWorkspaces(mergedWorkspaces);
-      setApplicants(res.applicants);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'تعذر تحميل لوحة تحكم المنصة.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
-    void loadOverview();
+    setLoading(true);
+    let wsReady = false;
+    let appReady = false;
+    const checkDone = () => {
+      if (wsReady && appReady) setLoading(false);
+    };
+
+    const unsubWorkspaces = subscribeOwnerWorkspaces(
+      (list) => {
+        setWorkspaces(list);
+        wsReady = true;
+        checkDone();
+      },
+      (err) => {
+        setError(err instanceof Error ? err.message : 'تعذر تحميل قائمة الفصول.');
+        wsReady = true;
+        checkDone();
+      }
+    );
+
+    const unsubApplicants = subscribeOwnerApplicants(
+      (list) => {
+        setApplicants(list);
+        appReady = true;
+        checkDone();
+      },
+      (err) => {
+        setError(err instanceof Error ? err.message : 'تعذر تحميل طلبات التسجيل.');
+        appReady = true;
+        checkDone();
+      }
+    );
+
+    return () => {
+      unsubWorkspaces();
+      unsubApplicants();
+    };
   }, []);
 
   const parseStagesFromConfig = (raw?: string, fallbackName?: string): WorkspaceStage[] => {
@@ -208,22 +223,21 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
         setCreating(false);
         return;
       }
-      const grades = validStages.map((s) => s.name);
-      const stageConfig = grades.join('، ');
 
-      const res = await apiFetch<{ workspace: Workspace }>('/api/owner/workspaces', {
-        method: 'POST',
-        body: JSON.stringify({
-          ...wizardForm,
-          stages: validStages,
-          grades,
-          stageConfig,
-        }),
+      const created = await createWorkspaceInFirestore({
+        applicantId: wizardForm.applicantId || undefined,
+        churchName: wizardForm.churchName,
+        className: wizardForm.className,
+        stages: validStages,
+        logoUrl: wizardForm.logoUrl,
+        verse: wizardForm.verse,
+        headFullName: wizardForm.headFullName,
+        headUsername: wizardForm.headUsername,
+        headPhone: wizardForm.headPhone,
+        headTempPassword: wizardForm.headTempPassword,
       });
-      await syncWorkspaceToFirestore(res.workspace).catch(() => {});
       setShowWizard(false);
-      setBannerMsg(`تم إنشاء وتدشين مساحة «${res.workspace.className}» بنجاح.`);
-      await loadOverview();
+      setBannerMsg(`تم إنشاء وتدشين مساحة «${created.className}» بنجاح.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'تعذر إنشاء الفصل الجديد.');
     } finally {
@@ -234,11 +248,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
   const handleToggleWorkspaceStatus = async (ws: Workspace) => {
     const nextStatus = ws.status === 'active' ? 'suspended' : 'active';
     try {
-      await apiFetch(`/api/owner/workspaces/${ws.id}/status`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: nextStatus }),
-      });
-      setWorkspaces((prev) => prev.map((w) => (w.id === ws.id ? { ...w, status: nextStatus } : w)));
+      await toggleWorkspaceStatusInFirestore(ws.id, nextStatus);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'تعذر تغيير حالة الفصل.');
     }
@@ -247,9 +257,9 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
   const handleConfirmDeleteWorkspace = async () => {
     if (!deleteTarget) return;
     try {
-      await apiFetch(`/api/owner/workspaces/${deleteTarget.id}`, { method: 'DELETE' });
-      setWorkspaces((prev) => prev.filter((w) => w.id !== deleteTarget.id));
-      setBannerMsg(`تم حذف مساحة «${deleteTarget.className}».`);
+      const targetName = deleteTarget.className;
+      await deleteWorkspaceCascadeInFirestore(deleteTarget.id);
+      setBannerMsg(`تم حذف مساحة «${targetName}».`);
       setDeleteTarget(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'تعذر حذف الفصل.');
@@ -258,11 +268,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
 
   const handleRejectApplicant = async (applicantId: string) => {
     try {
-      await apiFetch(`/api/owner/applicants/${applicantId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: 'rejected' }),
-      });
-      await loadOverview();
+      await updateApplicantStatusInFirestore(applicantId, 'rejected');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'تعذر تحديث حالة الطلب.');
     }

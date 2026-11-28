@@ -12,6 +12,10 @@ service cloud.firestore {
       return id is string && id.size() >= 2 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidLoginKey(id) {
+      return id is string && id.size() >= 2 && id.size() <= 256 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -25,13 +29,17 @@ service cloud.firestore {
     }
 
     function isEnvironmentOwner() {
-      return isSignedIn() && (
-        (
-          request.auth.token.email == 'jovanni.ayman@gmail.com' &&
-          request.auth.token.email_verified == true
-        ) ||
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
-      );
+      return isSignedIn() &&
+        request.auth.token.email == 'jovanni.ayman@gmail.com' &&
+        request.auth.token.email_verified == true;
+    }
+
+    function hasActiveSession() {
+      return isSignedIn() && exists(/databases/$(database)/documents/activeSessions/$(request.auth.uid));
+    }
+
+    function activeSessionData() {
+      return get(/databases/$(database)/documents/activeSessions/$(request.auth.uid)).data;
     }
 
     function workspaceExists(workspaceId) {
@@ -42,8 +50,12 @@ service cloud.firestore {
       return isSignedIn() && exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
     }
 
+    function memberData(workspaceId) {
+      return get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data;
+    }
+
     function memberRole(workspaceId) {
-      return get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data.role;
+      return memberData(workspaceId).role;
     }
 
     function isWorkspaceAdmin(workspaceId) {
@@ -60,13 +72,109 @@ service cloud.firestore {
       );
     }
 
+    function matchesLoginDir(data, dirData) {
+      return dirData.userId == data.userId &&
+        dirData.role == data.role &&
+        dirData.workspaceId == data.workspaceId &&
+        dirData.linkedProfileId == data.linkedProfileId &&
+        dirData.status in ['active', 'approved', 'pending'] &&
+        hashing.sha256(data.claimProof.toUtf8()).toHexString().lower() == dirData.claimVerifier;
+    }
+
+    function hasValidLoginClaim(data, expectedUid) {
+      return data.uid == expectedUid &&
+        'loginKey' in data && isValidLoginKey(data.loginKey) &&
+        'claimProof' in data && data.claimProof is string && data.claimProof.size() == 64 &&
+        existsAfter(/databases/$(database)/documents/loginDirectory/$(data.loginKey)) &&
+        matchesLoginDir(
+          data,
+          getAfter(/databases/$(database)/documents/loginDirectory/$(data.loginKey)).data
+        );
+    }
+
+    function matchesWorkspaceDir(data, dirData, workspaceId) {
+      return dirData.userId == data.userId &&
+        dirData.role == data.role &&
+        dirData.workspaceId == workspaceId &&
+        dirData.linkedProfileId == data.linkedProfileId &&
+        dirData.status in ['active', 'approved'] &&
+        hashing.sha256(data.claimProof.toUtf8()).toHexString().lower() == dirData.claimVerifier;
+    }
+
+    function hasValidWorkspaceLoginClaim(data, expectedUid, workspaceId) {
+      return data.uid == expectedUid &&
+        'userId' in data && data.userId is string && data.userId.size() >= 2 && data.userId.size() <= 128 &&
+        'loginKey' in data && isValidLoginKey(data.loginKey) &&
+        'claimProof' in data && data.claimProof is string && data.claimProof.size() == 64 &&
+        'linkedProfileId' in data && data.linkedProfileId is string && data.linkedProfileId.size() <= 128 &&
+        existsAfter(/databases/$(database)/documents/loginDirectory/$(data.loginKey)) &&
+        matchesWorkspaceDir(
+          data,
+          getAfter(/databases/$(database)/documents/loginDirectory/$(data.loginKey)).data,
+          workspaceId
+        );
+    }
+
     // --- Entity Validation Blueprints ---
+    function isValidLoginDirectory(data, loginKey) {
+      return data.keys().hasAll([
+          'loginKey', 'userId', 'username', 'role', 'workspaceId',
+          'fullName', 'status', 'mustChangePassword', 'linkedProfileId',
+          'salt', 'passwordHash', 'claimVerifier', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'loginKey', 'userId', 'username', 'role', 'workspaceId',
+          'fullName', 'status', 'mustChangePassword', 'linkedProfileId',
+          'salt', 'passwordHash', 'claimVerifier', 'phoneProofVerifier',
+          'lastResetProof', 'createdAt', 'updatedAt'
+        ]) &&
+        data.loginKey == loginKey &&
+        isValidLoginKey(data.loginKey) &&
+        isValidId(data.userId) &&
+        data.username is string && data.username.size() >= 2 && data.username.size() <= 64 &&
+        data.role in ['applicant', 'head_servant', 'assistant_head', 'servant', 'student'] &&
+        data.workspaceId is string && data.workspaceId.size() <= 128 &&
+        data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 120 &&
+        data.status in ['active', 'pending', 'approved', 'rejected', 'suspended'] &&
+        data.mustChangePassword is bool &&
+        data.linkedProfileId is string && data.linkedProfileId.size() <= 128 &&
+        data.salt is string && data.salt.size() >= 16 && data.salt.size() <= 64 &&
+        data.passwordHash is string && data.passwordHash.size() >= 64 && data.passwordHash.size() <= 128 &&
+        data.claimVerifier is string && data.claimVerifier.size() >= 64 && data.claimVerifier.size() <= 128 &&
+        (!('phoneProofVerifier' in data) || (data.phoneProofVerifier is string && data.phoneProofVerifier.size() <= 128)) &&
+        (!('lastResetProof' in data) || (data.lastResetProof is string && data.lastResetProof.size() <= 128)) &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidActiveSession(data, uid) {
+      return data.keys().hasAll([
+          'uid', 'userId', 'loginKey', 'role', 'workspaceId',
+          'fullName', 'linkedProfileId', 'claimProof', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid', 'userId', 'loginKey', 'role', 'workspaceId',
+          'fullName', 'linkedProfileId', 'claimProof', 'createdAt', 'updatedAt'
+        ]) &&
+        data.uid == uid &&
+        isValidId(data.uid) &&
+        isValidId(data.userId) &&
+        isValidLoginKey(data.loginKey) &&
+        data.role in ['applicant', 'head_servant', 'assistant_head', 'servant', 'student'] &&
+        data.workspaceId is string && data.workspaceId.size() <= 128 &&
+        data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 120 &&
+        data.linkedProfileId is string && data.linkedProfileId.size() <= 128 &&
+        data.claimProof is string && data.claimProof.size() == 64 &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
+    }
+
     function isValidWorkspace(data) {
       return data.keys().hasAll(['id', 'churchName', 'className', 'status', 'ownerUid', 'createdAt']) &&
         data.keys().hasOnly([
           'id', 'churchName', 'className', 'stageConfig', 'grades', 'stages', 'logoUrl',
           'verse', 'status', 'headServantId', 'headServantName', 'ownerUid',
-          'studentCount', 'servantCount', 'createdAt', 'updatedAt'
+          'studentCount', 'servantCount', 'customGroupIds', 'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.id) &&
         data.churchName is string && data.churchName.size() >= 2 && data.churchName.size() <= 120 &&
@@ -83,23 +191,53 @@ service cloud.firestore {
         (!('headServantName' in data) || (data.headServantName is string && data.headServantName.size() <= 120)) &&
         (!('studentCount' in data) || (data.studentCount is number && data.studentCount >= 0)) &&
         (!('servantCount' in data) || (data.servantCount is number && data.servantCount >= 0)) &&
+        (!('customGroupIds' in data) || (data.customGroupIds is list && data.customGroupIds.size() <= 100 && (data.customGroupIds.size() == 0 || data.customGroupIds[0] is string))) &&
         (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
     }
 
     function isValidMember(data, workspaceId) {
       return data.keys().hasAll(['uid', 'workspaceId', 'role', 'createdAt']) &&
-        data.keys().hasOnly(['uid', 'workspaceId', 'role', 'linkedProfileId', 'createdAt']) &&
+        data.keys().hasOnly([
+          'uid', 'workspaceId', 'role', 'linkedProfileId',
+          'userId', 'loginKey', 'claimProof', 'createdAt'
+        ]) &&
         isValidId(data.uid) &&
         data.workspaceId == workspaceId &&
         data.role in ['head_servant', 'assistant_head', 'servant', 'student'] &&
         data.createdAt is string && data.createdAt.size() <= 64 &&
-        (!('linkedProfileId' in data) || (data.linkedProfileId is string && data.linkedProfileId.size() <= 128));
+        (!('linkedProfileId' in data) || (data.linkedProfileId is string && data.linkedProfileId.size() <= 128)) &&
+        (!('userId' in data) || (data.userId is string && data.userId.size() <= 128)) &&
+        (!('loginKey' in data) || isValidLoginKey(data.loginKey)) &&
+        (!('claimProof' in data) || (data.claimProof is string && data.claimProof.size() <= 128));
+    }
+
+    function isValidWorkspaceAccount(data, workspaceId) {
+      return data.keys().hasAll([
+          'id', 'workspaceId', 'username', 'role', 'fullName',
+          'linkedProfileId', 'mustChangePassword', 'isActive', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'workspaceId', 'username', 'role', 'fullName', 'phone',
+          'linkedProfileId', 'mustChangePassword', 'isActive', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.workspaceId == workspaceId &&
+        data.username is string && data.username.size() >= 2 && data.username.size() <= 64 &&
+        data.role in ['head_servant', 'assistant_head', 'servant', 'student'] &&
+        data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 120 &&
+        data.linkedProfileId is string && data.linkedProfileId.size() <= 128 &&
+        data.mustChangePassword is bool &&
+        data.isActive is bool &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 32)) &&
+        (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
     }
 
     function isValidGlobalUser(data) {
       return data.keys().hasAll(['id', 'username', 'role', 'fullName', 'status', 'createdAt']) &&
         data.keys().hasOnly([
           'id', 'username', 'role', 'workspaceId', 'fullName', 'status',
+          'mustChangePassword', 'linkedProfileId',
           'ownerUid', 'approvedWorkspaceId', 'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.id) &&
@@ -109,6 +247,8 @@ service cloud.firestore {
         data.status in ['active', 'pending', 'approved', 'rejected', 'suspended'] &&
         data.createdAt is string && data.createdAt.size() <= 64 &&
         (!('workspaceId' in data) || (data.workspaceId is string && data.workspaceId.size() <= 128)) &&
+        (!('mustChangePassword' in data) || data.mustChangePassword is bool) &&
+        (!('linkedProfileId' in data) || (data.linkedProfileId is string && data.linkedProfileId.size() <= 128)) &&
         (!('ownerUid' in data) || (data.ownerUid is string && data.ownerUid.size() <= 128)) &&
         (!('approvedWorkspaceId' in data) || (data.approvedWorkspaceId is string && data.approvedWorkspaceId.size() <= 128)) &&
         (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
@@ -202,8 +342,8 @@ service cloud.firestore {
         (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 250000)) &&
         (!('badges' in data) || (data.badges is list && data.badges.size() <= 20 && (data.badges.size() == 0 || data.badges[0] is string))) &&
         (!('evaluations' in data) || data.evaluations is map) &&
-        (!('attendanceHistory' in data) || (data.attendanceHistory is list && data.attendanceHistory.size() <= 200)) &&
-        (!('pointsHistory' in data) || (data.pointsHistory is list && data.pointsHistory.size() <= 200)) &&
+        (!('attendanceHistory' in data) || (data.attendanceHistory is list && data.attendanceHistory.size() <= 1000)) &&
+        (!('pointsHistory' in data) || (data.pointsHistory is list && data.pointsHistory.size() <= 1000)) &&
         (!('username' in data) || (data.username is string && data.username.size() <= 64)) &&
         (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
     }
@@ -329,27 +469,139 @@ service cloud.firestore {
         (!('details' in data) || (data.details is string && data.details.size() <= 500));
     }
 
+    function isChannelReader(channelId, chData) {
+      return isEnvironmentOwner() ||
+        (channelId == 'global_leaders' && hasActiveSession() && activeSessionData().role == 'head_servant') ||
+        (('isBroadcast' in chData) && chData.isBroadcast == true && hasActiveSession() && activeSessionData().role == 'head_servant') ||
+        (('participantUid' in chData) && chData.participantUid == request.auth.uid) ||
+        (('participantUserId' in chData) && hasActiveSession() && activeSessionData().userId == chData.participantUserId) ||
+        (chData.type == 'group' && ('memberIds' in chData) && hasActiveSession() && activeSessionData().userId in chData.memberIds) ||
+        (chData.type == 'workspace_internal' && ('workspaceId' in chData) && chData.workspaceId is string && isWorkspaceServantOrAbove(chData.workspaceId));
+    }
+
+    function isChannelWriter(channelId, chData) {
+      return isEnvironmentOwner() || (
+        channelId != 'global_leaders' &&
+        (!('isBroadcast' in chData) || chData.isBroadcast == false) &&
+        (
+          (('participantUid' in chData) && chData.participantUid == request.auth.uid) ||
+          (('participantUserId' in chData) && hasActiveSession() && activeSessionData().userId == chData.participantUserId) ||
+          (chData.type == 'group' && ('memberIds' in chData) && hasActiveSession() && activeSessionData().userId in chData.memberIds) ||
+          (chData.type == 'workspace_internal' && ('workspaceId' in chData) && chData.workspaceId is string && isWorkspaceServantOrAbove(chData.workspaceId))
+        )
+      );
+    }
+
     // --- Test Connection Health Check ---
     match /test/{docId} {
       allow get: if isSignedIn() && docId == 'connection';
     }
 
-    // --- Bootstrapped Admins ---
-    match /admins/{uid} {
+    // --- Case-Sensitive Login Directory (No PII, No List Enumeration) ---
+    match /loginDirectory/{loginKey} {
+      allow get: if isSignedIn() && isValidLoginKey(loginKey);
+      allow list: if false;
+      allow create: if isSignedIn() && isValidLoginKey(loginKey) && isValidLoginDirectory(incoming(), loginKey) && (
+        isEnvironmentOwner() ||
+        (
+          incoming().workspaceId != '' &&
+          existsAfter(/databases/$(database)/documents/workspaces/$(incoming().workspaceId)) &&
+          (
+            (isWorkspaceAdmin(incoming().workspaceId) && incoming().role in ['assistant_head', 'servant', 'student']) ||
+            (isWorkspaceServantOrAbove(incoming().workspaceId) && incoming().role == 'student')
+          )
+        ) ||
+        (
+          incoming().role == 'applicant' &&
+          incoming().status == 'pending' &&
+          incoming().workspaceId == '' &&
+          incoming().userId == request.auth.uid &&
+          incoming().linkedProfileId == request.auth.uid
+        )
+      );
+      allow update: if isSignedIn() && isValidLoginKey(loginKey) && isValidLoginDirectory(incoming(), loginKey) && (
+        isEnvironmentOwner() ||
+        (
+          existing().workspaceId != '' &&
+          isWorkspaceAdmin(existing().workspaceId) &&
+          incoming().workspaceId == existing().workspaceId &&
+          incoming().userId == existing().userId &&
+          incoming().role in ['head_servant', 'assistant_head', 'servant', 'student'] &&
+          incoming().createdAt == existing().createdAt
+        ) ||
+        (
+          hasActiveSession() &&
+          activeSessionData().userId == existing().userId &&
+          incoming().userId == existing().userId &&
+          incoming().username == existing().username &&
+          incoming().role == existing().role &&
+          incoming().workspaceId == existing().workspaceId &&
+          incoming().status == existing().status &&
+          incoming().linkedProfileId == existing().linkedProfileId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'salt', 'passwordHash', 'claimVerifier', 'mustChangePassword', 'updatedAt'
+          ])
+        ) ||
+        (
+          'phoneProofVerifier' in existing() &&
+          existing().phoneProofVerifier is string &&
+          existing().phoneProofVerifier.size() == 64 &&
+          'lastResetProof' in incoming() &&
+          incoming().lastResetProof is string &&
+          incoming().lastResetProof.size() == 64 &&
+          hashing.sha256(incoming().lastResetProof.toUtf8()).toHexString().lower() == existing().phoneProofVerifier &&
+          incoming().userId == existing().userId &&
+          incoming().username == existing().username &&
+          incoming().role == existing().role &&
+          incoming().workspaceId == existing().workspaceId &&
+          incoming().status == existing().status &&
+          incoming().linkedProfileId == existing().linkedProfileId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'salt', 'passwordHash', 'claimVerifier', 'phoneProofVerifier',
+            'lastResetProof', 'mustChangePassword', 'updatedAt'
+          ])
+        )
+      );
+      allow delete: if isSignedIn() && isValidLoginKey(loginKey) && (
+        isEnvironmentOwner() ||
+        (existing().workspaceId != '' && isWorkspaceAdmin(existing().workspaceId))
+      );
+    }
+
+    // --- Active Sessions (Multi-Device Identity Binding) ---
+    match /activeSessions/{uid} {
       allow get: if isSignedIn() && isValidId(uid) && (request.auth.uid == uid || isEnvironmentOwner());
-      allow write: if false;
+      allow list: if isEnvironmentOwner();
+      allow create, update: if isSignedIn() && isValidId(uid) &&
+        request.auth.uid == uid &&
+        isValidActiveSession(incoming(), uid) &&
+        hasValidLoginClaim(incoming(), uid);
+      allow delete: if isSignedIn() && isValidId(uid) && (request.auth.uid == uid || isEnvironmentOwner());
     }
 
     // --- Global Users & Isolated Private PII ---
     match /globalUsers/{userId} {
       allow get: if isSignedIn() && isValidId(userId) && (
-        request.auth.uid == userId || isEnvironmentOwner()
+        request.auth.uid == userId ||
+        isEnvironmentOwner() ||
+        (hasActiveSession() && activeSessionData().userId == userId)
       );
       allow list: if isEnvironmentOwner() || (
         isSignedIn() && existing().ownerUid == request.auth.uid
       );
       allow create: if isSignedIn() && isValidId(userId) && isValidGlobalUser(incoming()) && (
         isEnvironmentOwner() ||
+        (
+          'workspaceId' in incoming() &&
+          incoming().workspaceId != '' &&
+          existsAfter(/databases/$(database)/documents/workspaces/$(incoming().workspaceId)) &&
+          (
+            (isWorkspaceAdmin(incoming().workspaceId) && incoming().role in ['assistant_head', 'servant', 'student']) ||
+            (isWorkspaceServantOrAbove(incoming().workspaceId) && incoming().role == 'student')
+          )
+        ) ||
         (
           request.auth.uid == userId &&
           incoming().ownerUid == request.auth.uid &&
@@ -360,71 +612,89 @@ service cloud.firestore {
       allow update: if isSignedIn() && isValidId(userId) && isValidGlobalUser(incoming()) && (
         isEnvironmentOwner() ||
         (
-          request.auth.uid == userId &&
+          'workspaceId' in existing() &&
+          existing().workspaceId != '' &&
+          isWorkspaceAdmin(existing().workspaceId) &&
+          incoming().workspaceId == existing().workspaceId &&
+          incoming().role in ['head_servant', 'assistant_head', 'servant', 'student'] &&
+          incoming().createdAt == existing().createdAt
+        ) ||
+        (
+          (request.auth.uid == userId || (hasActiveSession() && activeSessionData().userId == userId)) &&
+          incoming().id == existing().id &&
           incoming().role == existing().role &&
           incoming().status == existing().status &&
           incoming().createdAt == existing().createdAt &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'updatedAt'])
+          incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'mustChangePassword', 'updatedAt'])
         )
       );
-      allow delete: if isEnvironmentOwner() && isValidId(userId);
+      allow delete: if isSignedIn() && isValidId(userId) && (
+        isEnvironmentOwner() ||
+        ('workspaceId' in existing() && existing().workspaceId != '' && isWorkspaceAdmin(existing().workspaceId))
+      );
 
       match /private/{docId} {
         allow get: if isSignedIn() && isValidId(userId) && isValidId(docId) && (
-          request.auth.uid == userId || isEnvironmentOwner()
+          request.auth.uid == userId ||
+          isEnvironmentOwner() ||
+          (hasActiveSession() && activeSessionData().userId == userId)
         );
         allow create: if isSignedIn() && isValidId(userId) && isValidId(docId) &&
           isValidGlobalUserPrivate(incoming(), userId) && (
-            request.auth.uid == userId || isEnvironmentOwner()
+            isEnvironmentOwner() ||
+            request.auth.uid == userId ||
+            (
+              existsAfter(/databases/$(database)/documents/globalUsers/$(userId)) &&
+              getAfter(/databases/$(database)/documents/globalUsers/$(userId)).data.workspaceId != '' &&
+              isWorkspaceServantOrAbove(getAfter(/databases/$(database)/documents/globalUsers/$(userId)).data.workspaceId)
+            )
           );
         allow update: if isSignedIn() && isValidId(userId) && isValidId(docId) &&
           isValidGlobalUserPrivate(incoming(), userId) && (
             isEnvironmentOwner() ||
             (
-              request.auth.uid == userId &&
+              exists(/databases/$(database)/documents/globalUsers/$(userId)) &&
+              get(/databases/$(database)/documents/globalUsers/$(userId)).data.workspaceId != '' &&
+              isWorkspaceAdmin(get(/databases/$(database)/documents/globalUsers/$(userId)).data.workspaceId)
+            ) ||
+            (
+              (request.auth.uid == userId || (hasActiveSession() && activeSessionData().userId == userId)) &&
               incoming().userId == existing().userId &&
               incoming().diff(existing()).affectedKeys().hasOnly([
                 'phone', 'passwordHash', 'salt', 'serviceVision', 'mustChangePassword'
               ])
             )
           );
-        allow delete: if isEnvironmentOwner() && isValidId(userId) && isValidId(docId);
+        allow delete: if isSignedIn() && isValidId(userId) && isValidId(docId) && (
+          isEnvironmentOwner() ||
+          (
+            exists(/databases/$(database)/documents/globalUsers/$(userId)) &&
+            get(/databases/$(database)/documents/globalUsers/$(userId)).data.workspaceId != '' &&
+            isWorkspaceAdmin(get(/databases/$(database)/documents/globalUsers/$(userId)).data.workspaceId)
+          )
+        );
       }
     }
 
     // --- Environment Leadership & Onboarding Chat ---
     match /environmentChat/{channelId} {
-      allow get: if isSignedIn() && isValidId(channelId) && (
-        isEnvironmentOwner() ||
-        channelId == 'global_leaders' ||
-        ('isBroadcast' in existing() && existing().isBroadcast == true) ||
-        existing().participantUid == request.auth.uid ||
-        (existing().type == 'group' && ('memberUids' in existing()) && request.auth.uid in existing().memberUids) ||
-        (existing().type == 'workspace_internal' && existing().workspaceId is string && isWorkspaceServantOrAbove(existing().workspaceId))
-      );
-      allow list: if isEnvironmentOwner() || (
-        isSignedIn() && (
-          existing().id == 'global_leaders' ||
-          ('isBroadcast' in existing() && existing().isBroadcast == true) ||
-          (existing().type == 'group' && ('memberUids' in existing()) && request.auth.uid in existing().memberUids) ||
-          existing().participantUid == request.auth.uid
-        )
-      );
+      allow get: if isSignedIn() && isValidId(channelId) && isChannelReader(channelId, existing());
+      allow list: if isEnvironmentOwner();
       allow create: if isSignedIn() && isValidId(channelId) && isValidChatChannel(incoming()) && (
         isEnvironmentOwner() ||
-        (incoming().type in ['direct', 'applicant_direct'] && incoming().participantUid == request.auth.uid) ||
+        (
+          incoming().type in ['direct', 'applicant_direct'] &&
+          (
+            incoming().participantUid == request.auth.uid ||
+            (hasActiveSession() && activeSessionData().userId == incoming().participantUserId)
+          )
+        ) ||
         (incoming().type == 'workspace_internal' && incoming().workspaceId is string && isWorkspaceServantOrAbove(incoming().workspaceId))
       );
       allow update: if isSignedIn() && isValidId(channelId) && isValidChatChannel(incoming()) && (
         isEnvironmentOwner() ||
         (
-          channelId != 'global_leaders' &&
-          (!('isBroadcast' in existing()) || existing().isBroadcast == false) &&
-          (
-            (existing().type == 'group' && ('memberUids' in existing()) && request.auth.uid in existing().memberUids) ||
-            existing().participantUid == request.auth.uid ||
-            (existing().type == 'workspace_internal' && existing().workspaceId is string && isWorkspaceServantOrAbove(existing().workspaceId))
-          ) &&
+          isChannelWriter(channelId, existing()) &&
           incoming().id == existing().id &&
           incoming().type == existing().type &&
           incoming().diff(existing()).affectedKeys().hasOnly(['lastMessage', 'lastMessageAt'])
@@ -433,63 +703,18 @@ service cloud.firestore {
       allow delete: if isEnvironmentOwner() && isValidId(channelId);
 
       match /messages/{messageId} {
-        allow get: if isSignedIn() && isValidId(channelId) && isValidId(messageId) && (
-          isEnvironmentOwner() ||
-          channelId == 'global_leaders' ||
-          ('isBroadcast' in get(/databases/$(database)/documents/environmentChat/$(channelId)).data &&
-           get(/databases/$(database)/documents/environmentChat/$(channelId)).data.isBroadcast == true) ||
-          get(/databases/$(database)/documents/environmentChat/$(channelId)).data.participantUid == request.auth.uid ||
-          (
-            get(/databases/$(database)/documents/environmentChat/$(channelId)).data.type == 'group' &&
-            ('memberUids' in get(/databases/$(database)/documents/environmentChat/$(channelId)).data) &&
-            request.auth.uid in get(/databases/$(database)/documents/environmentChat/$(channelId)).data.memberUids
-          ) ||
-          (
-            get(/databases/$(database)/documents/environmentChat/$(channelId)).data.type == 'workspace_internal' &&
-            get(/databases/$(database)/documents/environmentChat/$(channelId)).data.workspaceId is string &&
-            isWorkspaceServantOrAbove(get(/databases/$(database)/documents/environmentChat/$(channelId)).data.workspaceId)
-          )
-        );
+        allow get: if isSignedIn() && isValidId(channelId) && isValidId(messageId) &&
+          exists(/databases/$(database)/documents/environmentChat/$(channelId)) &&
+          isChannelReader(channelId, get(/databases/$(database)/documents/environmentChat/$(channelId)).data);
         allow list: if isEnvironmentOwner() || (
-          isSignedIn() && (
-            channelId == 'global_leaders' ||
-            existing().senderUid == request.auth.uid ||
-            get(/databases/$(database)/documents/environmentChat/$(channelId)).data.participantUid == request.auth.uid ||
-            (
-              get(/databases/$(database)/documents/environmentChat/$(channelId)).data.type == 'group' &&
-              ('memberUids' in get(/databases/$(database)/documents/environmentChat/$(channelId)).data) &&
-              request.auth.uid in get(/databases/$(database)/documents/environmentChat/$(channelId)).data.memberUids
-            ) ||
-            (
-              get(/databases/$(database)/documents/environmentChat/$(channelId)).data.type == 'workspace_internal' &&
-              get(/databases/$(database)/documents/environmentChat/$(channelId)).data.workspaceId is string &&
-              isWorkspaceServantOrAbove(get(/databases/$(database)/documents/environmentChat/$(channelId)).data.workspaceId)
-            )
-          )
+          isSignedIn() &&
+          exists(/databases/$(database)/documents/environmentChat/$(channelId)) &&
+          isChannelReader(channelId, get(/databases/$(database)/documents/environmentChat/$(channelId)).data)
         );
         allow create: if isSignedIn() && isValidId(channelId) && isValidId(messageId) &&
           isValidChatMessage(incoming(), channelId) &&
-          exists(/databases/$(database)/documents/environmentChat/$(channelId)) && (
-            isEnvironmentOwner() ||
-            (
-              channelId != 'global_leaders' &&
-              (!('isBroadcast' in get(/databases/$(database)/documents/environmentChat/$(channelId)).data) ||
-               get(/databases/$(database)/documents/environmentChat/$(channelId)).data.isBroadcast == false) &&
-              (
-                get(/databases/$(database)/documents/environmentChat/$(channelId)).data.participantUid == request.auth.uid ||
-                (
-                  get(/databases/$(database)/documents/environmentChat/$(channelId)).data.type == 'group' &&
-                  ('memberUids' in get(/databases/$(database)/documents/environmentChat/$(channelId)).data) &&
-                  request.auth.uid in get(/databases/$(database)/documents/environmentChat/$(channelId)).data.memberUids
-                ) ||
-                (
-                  get(/databases/$(database)/documents/environmentChat/$(channelId)).data.type == 'workspace_internal' &&
-                  get(/databases/$(database)/documents/environmentChat/$(channelId)).data.workspaceId is string &&
-                  isWorkspaceServantOrAbove(get(/databases/$(database)/documents/environmentChat/$(channelId)).data.workspaceId)
-                )
-              )
-            )
-          );
+          existsAfter(/databases/$(database)/documents/environmentChat/$(channelId)) &&
+          isChannelWriter(channelId, getAfter(/databases/$(database)/documents/environmentChat/$(channelId)).data);
         allow update, delete: if isEnvironmentOwner() && isValidId(channelId) && isValidId(messageId);
       }
     }
@@ -515,6 +740,14 @@ service cloud.firestore {
             'churchName', 'className', 'stageConfig', 'grades', 'stages', 'logoUrl',
             'verse', 'studentCount', 'servantCount', 'updatedAt'
           ])
+        ) ||
+        (
+          isWorkspaceServantOrAbove(workspaceId) &&
+          incoming().id == existing().id &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().status == existing().status &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['studentCount', 'updatedAt'])
         )
       );
       allow delete: if isEnvironmentOwner() && isValidId(workspaceId);
@@ -529,7 +762,9 @@ service cloud.firestore {
         );
         allow create: if isSignedIn() && isValidId(workspaceId) && isValidId(uid) &&
           workspaceExists(workspaceId) && isValidMember(incoming(), workspaceId) && (
-            isEnvironmentOwner() || isWorkspaceAdmin(workspaceId)
+            isEnvironmentOwner() ||
+            isWorkspaceAdmin(workspaceId) ||
+            (request.auth.uid == uid && hasValidWorkspaceLoginClaim(incoming(), uid, workspaceId))
           );
         allow update: if isSignedIn() && isValidId(workspaceId) && isValidId(uid) &&
           isValidMember(incoming(), workspaceId) && (
@@ -540,9 +775,58 @@ service cloud.firestore {
               incoming().workspaceId == existing().workspaceId &&
               incoming().createdAt == existing().createdAt &&
               incoming().diff(existing()).affectedKeys().hasOnly(['role', 'linkedProfileId'])
+            ) ||
+            (
+              request.auth.uid == uid &&
+              workspaceExists(workspaceId) &&
+              hasValidWorkspaceLoginClaim(incoming(), uid, workspaceId)
             )
           );
         allow delete: if isSignedIn() && isValidId(workspaceId) && isValidId(uid) && (
+          isEnvironmentOwner() || request.auth.uid == uid || isWorkspaceAdmin(workspaceId)
+        );
+      }
+
+      // Workspace Accounts Subcollection (Leadership Administration)
+      match /accounts/{accountId} {
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(accountId) && (
+          isEnvironmentOwner() || isWorkspaceAdmin(workspaceId)
+        );
+        allow list: if isEnvironmentOwner() || (
+          isSignedIn() && isWorkspaceAdmin(workspaceId) && existing().workspaceId == workspaceId
+        );
+        allow create: if isSignedIn() && isValidId(workspaceId) && isValidId(accountId) &&
+          existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
+          isValidWorkspaceAccount(incoming(), workspaceId) && (
+            isEnvironmentOwner() ||
+            isWorkspaceAdmin(workspaceId) ||
+            (isWorkspaceServantOrAbove(workspaceId) && incoming().role == 'student')
+          );
+        allow update: if isSignedIn() && isValidId(workspaceId) && isValidId(accountId) &&
+          isValidWorkspaceAccount(incoming(), workspaceId) && (
+            isEnvironmentOwner() ||
+            (
+              isWorkspaceAdmin(workspaceId) &&
+              incoming().id == existing().id &&
+              incoming().workspaceId == existing().workspaceId &&
+              incoming().createdAt == existing().createdAt &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'fullName', 'phone', 'role', 'mustChangePassword', 'isActive', 'updatedAt'
+              ])
+            ) ||
+            (
+              hasActiveSession() &&
+              activeSessionData().workspaceId == workspaceId &&
+              activeSessionData().linkedProfileId == existing().linkedProfileId &&
+              incoming().id == existing().id &&
+              incoming().workspaceId == existing().workspaceId &&
+              incoming().role == existing().role &&
+              incoming().linkedProfileId == existing().linkedProfileId &&
+              incoming().createdAt == existing().createdAt &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['mustChangePassword', 'updatedAt'])
+            )
+          );
+        allow delete: if isSignedIn() && isValidId(workspaceId) && isValidId(accountId) && (
           isEnvironmentOwner() || isWorkspaceAdmin(workspaceId)
         );
       }
@@ -550,10 +834,12 @@ service cloud.firestore {
       // Students Subcollection
       match /students/{studentId} {
         allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(studentId) && (
-          isEnvironmentOwner() || isWorkspaceMember(workspaceId)
+          isEnvironmentOwner() ||
+          isWorkspaceServantOrAbove(workspaceId) ||
+          (isWorkspaceMember(workspaceId) && memberData(workspaceId).linkedProfileId == studentId)
         );
         allow list: if isEnvironmentOwner() || (
-          isSignedIn() && isWorkspaceMember(workspaceId) && existing().workspaceId == workspaceId
+          isSignedIn() && isWorkspaceServantOrAbove(workspaceId) && existing().workspaceId == workspaceId
         );
         allow create: if isSignedIn() && isValidId(workspaceId) && isValidId(studentId) &&
           workspaceExists(workspaceId) && isValidStudent(incoming(), workspaceId) &&
@@ -585,7 +871,8 @@ service cloud.firestore {
           isSignedIn() && isWorkspaceMember(workspaceId) && existing().workspaceId == workspaceId
         );
         allow create: if isSignedIn() && isValidId(workspaceId) && isValidId(servantId) &&
-          workspaceExists(workspaceId) && isValidServant(incoming(), workspaceId) &&
+          existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
+          isValidServant(incoming(), workspaceId) &&
           isWorkspaceAdmin(workspaceId);
         allow update: if isSignedIn() && isValidId(workspaceId) && isValidId(servantId) &&
           isValidServant(incoming(), workspaceId) && (
@@ -673,10 +960,15 @@ service cloud.firestore {
       // Announcements Subcollection
       match /announcements/{announcementId} {
         allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(announcementId) && (
-          isEnvironmentOwner() || isWorkspaceMember(workspaceId)
+          isEnvironmentOwner() ||
+          isWorkspaceServantOrAbove(workspaceId) ||
+          (isWorkspaceMember(workspaceId) && existing().target in ['all', 'students_only'])
         );
         allow list: if isEnvironmentOwner() || (
-          isSignedIn() && isWorkspaceMember(workspaceId) && existing().workspaceId == workspaceId
+          isSignedIn() &&
+          isWorkspaceMember(workspaceId) &&
+          existing().workspaceId == workspaceId &&
+          (existing().target in ['all', 'students_only'] || isWorkspaceServantOrAbove(workspaceId))
         );
         allow create: if isSignedIn() && isValidId(workspaceId) && isValidId(announcementId) &&
           workspaceExists(workspaceId) && isValidAnnouncement(incoming(), workspaceId) &&
@@ -702,10 +994,14 @@ service cloud.firestore {
         allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(requestId) && (
           isEnvironmentOwner() ||
           isWorkspaceServantOrAbove(workspaceId) ||
-          existing().ownerUid == request.auth.uid
+          existing().ownerUid == request.auth.uid ||
+          (isWorkspaceMember(workspaceId) && memberData(workspaceId).linkedProfileId == existing().studentId)
         );
         allow list: if isEnvironmentOwner() || isWorkspaceServantOrAbove(workspaceId) || (
-          isSignedIn() && isWorkspaceMember(workspaceId) && existing().workspaceId == workspaceId && existing().ownerUid == request.auth.uid
+          isSignedIn() && isWorkspaceMember(workspaceId) && existing().workspaceId == workspaceId && (
+            existing().ownerUid == request.auth.uid ||
+            existing().studentId == memberData(workspaceId).linkedProfileId
+          )
         );
         allow create: if isSignedIn() && isValidId(workspaceId) && isValidId(requestId) &&
           workspaceExists(workspaceId) && isValidChangeRequest(incoming(), workspaceId) &&
@@ -736,7 +1032,7 @@ service cloud.firestore {
         allow create: if isSignedIn() && isValidId(workspaceId) && isValidId(logId) &&
           workspaceExists(workspaceId) && isValidServantLog(incoming(), workspaceId) &&
           isWorkspaceServantOrAbove(workspaceId);
-        allow update, delete: if false;
+        allow update, delete: if isEnvironmentOwner();
       }
     }
   }

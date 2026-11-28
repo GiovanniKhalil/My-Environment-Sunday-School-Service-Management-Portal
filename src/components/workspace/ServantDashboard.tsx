@@ -17,13 +17,18 @@ import type {
   WorkspaceBundle,
 } from '../../types';
 import {
-  apiFetch,
   buildWhatsAppUrl,
   exportAttendanceToExcel,
   formatArabicDate,
   getWorkspaceStageNames,
   resolveLogoUrl,
 } from '../../utils/api';
+import {
+  createAnnouncementInFirestore,
+  deleteAnnouncementInFirestore,
+  recordBulkAttendanceInFirestore,
+  recordBulkPointsInFirestore,
+} from '../../services/firestoreService';
 
 interface ServantDashboardProps {
   bundle: WorkspaceBundle;
@@ -140,12 +145,16 @@ export const ServantDashboard: React.FC<ServantDashboardProps> = ({
         attGrade === 'all' ? students : students.filter((s) => s.grade === attGrade);
       const records = targetStudents.map((s) => ({
         studentId: s.id,
-        status: attMap[s.id] || 'present',
+        status: attMap[s.id] || ('present' as const),
       }));
-      await apiFetch(`/api/workspaces/${workspace.id}/students/bulk-attendance`, {
-        method: 'POST',
-        body: JSON.stringify({ date: attDate, sessionType: attSession, records }),
-      });
+      await recordBulkAttendanceInFirestore(
+        workspace.id,
+        attDate,
+        attSession,
+        records,
+        currentUser.fullName,
+        students
+      );
       setShowAttendanceModal(false);
       setFeedback('تم تسجيل الحضور والغياب وتحديث نسب المواظبة.');
       await onRefresh();
@@ -159,15 +168,15 @@ export const ServantDashboard: React.FC<ServantDashboardProps> = ({
     if (ptsSelectedIds.length === 0 || !ptsReason.trim()) return;
     setSaving(true);
     try {
-      await apiFetch(`/api/workspaces/${workspace.id}/students/bulk-points`, {
-        method: 'POST',
-        body: JSON.stringify({
-          studentIds: ptsSelectedIds,
-          amount: ptsAmount,
-          mode: ptsMode,
-          reason: ptsReason.trim(),
-        }),
-      });
+      await recordBulkPointsInFirestore(
+        workspace.id,
+        ptsSelectedIds,
+        ptsAmount,
+        ptsMode,
+        ptsReason.trim(),
+        currentUser.fullName,
+        students
+      );
       setShowPointsModal(false);
       setPtsSelectedIds([]);
       setPtsReason('');
@@ -182,10 +191,7 @@ export const ServantDashboard: React.FC<ServantDashboardProps> = ({
     e.preventDefault();
     setSaving(true);
     try {
-      await apiFetch(`/api/workspaces/${workspace.id}/announcements`, {
-        method: 'POST',
-        body: JSON.stringify(annForm),
-      });
+      await createAnnouncementInFirestore(workspace.id, annForm, currentUser);
       setShowAnnouncementModal(false);
       setAnnForm({ title: '', body: '', target: 'all', isUrgent: false });
       setFeedback('تم نشر الإعلان بنجاح.');
@@ -196,7 +202,7 @@ export const ServantDashboard: React.FC<ServantDashboardProps> = ({
   };
 
   const handleDeleteAnnouncement = async (id: string) => {
-    await apiFetch(`/api/workspaces/${workspace.id}/announcements/${id}`, { method: 'DELETE' });
+    await deleteAnnouncementInFirestore(workspace.id, id);
     await onRefresh();
   };
 

@@ -1,5 +1,5 @@
 // Security TDD Spec Verification Suite for Firestore Rules
-// Covers the "Dirty Dozen" cross-tenant isolation, privilege escalation, and schema tests.
+// Covers the "Dirty Dozen" cross-tenant isolation, privilege escalation, chat isolation, and schema tests.
 
 export const DIRTY_DOZEN_CASES = [
   {
@@ -49,9 +49,9 @@ export const DIRTY_DOZEN_CASES = [
   },
   {
     id: 7,
-    name: 'Global Users PII Scraping',
-    path: '/globalUsers/otherUser/private/info',
-    operation: 'get',
+    name: 'Login Directory & Global Users PII Scraping',
+    path: '/loginDirectory',
+    operation: 'list',
     expected: 'PERMISSION_DENIED',
   },
   {
@@ -80,17 +80,18 @@ export const DIRTY_DOZEN_CASES = [
   },
   {
     id: 11,
-    name: 'Applicant Reading Another Applicant Direct Chat',
-    path: '/environmentChat/direct_applicantB/messages/msg_1',
-    operation: 'get',
+    name: 'Head Servant Writing to Read-Only Broadcast Channel',
+    path: '/environmentChat/global_leaders/messages/msg_hack',
+    operation: 'create',
+    payload: { id: 'msg_hack', channelId: 'global_leaders', senderUid: 'head_uid', senderName: 'Head', text: 'Spam', createdAt: '2026-11-28' },
     expected: 'PERMISSION_DENIED',
   },
   {
     id: 12,
-    name: 'Unauthenticated Blanket Read',
-    path: '/workspaces/ws_alpha',
-    operation: 'get',
-    auth: null,
+    name: 'Forged Session Claim Without Valid ClaimProof',
+    path: '/workspaces/ws_alpha/members/attacker_uid',
+    operation: 'create',
+    payload: { uid: 'attacker_uid', workspaceId: 'ws_alpha', role: 'head_servant', claimProof: '0'.repeat(64), createdAt: '2026-11-28' },
     expected: 'PERMISSION_DENIED',
   },
 ];

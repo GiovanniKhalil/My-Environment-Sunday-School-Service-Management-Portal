@@ -1,7 +1,13 @@
 import { useEffect, useState } from 'react';
+import { onAuthStateChanged } from 'firebase/auth';
 import type { SessionUser, Workspace } from './types';
-import { apiFetch, clearSessionToken, DEFAULT_PLATFORM_EMBLEM } from './utils/api';
-import { signOutFirebase, testConnection } from './firebase';
+import { DEFAULT_PLATFORM_EMBLEM } from './utils/api';
+import { auth, testConnection } from './firebase';
+import {
+  logoutFromFirestore,
+  OWNER_EMAIL,
+  restoreSessionFromFirebaseAuth,
+} from './services/firestoreService';
 import { LoginPortal } from './components/LoginPortal';
 import { OwnerDashboard } from './components/OwnerDashboard';
 import { ApplicantPortal } from './components/ApplicantPortal';
@@ -9,36 +15,38 @@ import { WorkspaceShell } from './components/workspace/WorkspaceShell';
 
 export default function App() {
   const [bootLoading, setBootLoading] = useState(true);
-  const [ownerClaimed, setOwnerClaimed] = useState(false);
-  const [ownerEmail, setOwnerEmail] = useState('jovanni.ayman@gmail.com');
-
   const [currentUser, setCurrentUser] = useState<SessionUser | null>(null);
   const [activeWorkspace, setActiveWorkspace] = useState<Workspace | null>(null);
   const [inspectingWorkspace, setInspectingWorkspace] = useState<Workspace | null>(null);
 
   useEffect(() => {
     let mounted = true;
-    const boot = async () => {
-      try {
-        void testConnection();
-        const health = await apiFetch<{
-          ok: boolean;
-          ownerClaimed: boolean;
-          ownerEmail: string;
-        }>('/api/health');
-        if (mounted) {
-          setOwnerClaimed(Boolean(health.ownerClaimed));
-          setOwnerEmail(health.ownerEmail || 'jovanni.ayman@gmail.com');
+    void testConnection();
+
+    const unsubscribe = onAuthStateChanged(auth, (fbUser) => {
+      void (async () => {
+        try {
+          const { user, workspace } = await restoreSessionFromFirebaseAuth(fbUser);
+          if (!mounted) return;
+          setCurrentUser(user);
+          setActiveWorkspace(workspace);
+          if (!user || user.role !== 'environment_owner') {
+            setInspectingWorkspace(null);
+          }
+        } catch {
+          if (!mounted) return;
+          setCurrentUser(null);
+          setActiveWorkspace(null);
+          setInspectingWorkspace(null);
+        } finally {
+          if (mounted) setBootLoading(false);
         }
-      } catch {
-        // fallback defaults
-      } finally {
-        if (mounted) setBootLoading(false);
-      }
-    };
-    void boot();
+      })();
+    });
+
     return () => {
       mounted = false;
+      unsubscribe();
     };
   }, []);
 
@@ -48,12 +56,19 @@ export default function App() {
     setInspectingWorkspace(null);
   };
 
+  const handleRefreshSession = async () => {
+    const { user, workspace } = await restoreSessionFromFirebaseAuth(auth.currentUser);
+    setCurrentUser(user);
+    setActiveWorkspace(workspace);
+    setInspectingWorkspace(null);
+  };
+
   const handleLogout = () => {
-    clearSessionToken();
-    void signOutFirebase();
+    const userSnapshot = currentUser;
     setCurrentUser(null);
     setActiveWorkspace(null);
     setInspectingWorkspace(null);
+    void logoutFromFirestore(userSnapshot);
   };
 
   if (bootLoading) {
@@ -74,10 +89,8 @@ export default function App() {
   if (!currentUser) {
     return (
       <LoginPortal
-        ownerClaimed={ownerClaimed}
-        ownerEmail={ownerEmail}
+        ownerEmail={OWNER_EMAIL}
         onAuthenticated={handleAuthenticated}
-        onOwnerClaimed={() => setOwnerClaimed(true)}
       />
     );
   }
@@ -104,7 +117,13 @@ export default function App() {
   }
 
   if (currentUser.role === 'applicant') {
-    return <ApplicantPortal user={currentUser} onLogout={handleLogout} />;
+    return (
+      <ApplicantPortal
+        user={currentUser}
+        onSessionActivated={handleRefreshSession}
+        onLogout={handleLogout}
+      />
+    );
   }
 
   if (activeWorkspace) {

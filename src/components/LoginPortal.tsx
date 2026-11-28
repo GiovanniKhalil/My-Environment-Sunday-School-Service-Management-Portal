@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import {
   Church,
-  KeyRound,
   LogIn,
   ShieldCheck,
   UserPlus,
@@ -12,21 +11,23 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import type { SessionUser, Workspace } from '../types';
-import { apiFetch, DEFAULT_PLATFORM_EMBLEM, setSessionToken } from '../utils/api';
-import { signInOwnerWithGoogle, trySignInAnonymously } from '../firebase';
+import { DEFAULT_PLATFORM_EMBLEM } from '../utils/api';
+import heroChurchImg from '../assets/images/hero_church_sanctuary_1795619749074.jpg';
+import {
+  loginWithCredentials,
+  loginWithGoogleOwner,
+  registerApplicantInFirestore,
+  resetPasswordWithPhoneInFirestore,
+} from '../services/firestoreService';
 
 interface LoginPortalProps {
-  ownerClaimed: boolean;
   ownerEmail: string;
   onAuthenticated: (user: SessionUser, workspace: Workspace | null) => void;
-  onOwnerClaimed: () => void;
 }
 
 export const LoginPortal: React.FC<LoginPortalProps> = ({
-  ownerClaimed,
   ownerEmail,
   onAuthenticated,
-  onOwnerClaimed,
 }) => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -38,7 +39,6 @@ export const LoginPortal: React.FC<LoginPortalProps> = ({
   // Modals
   const [showRegisterModal, setShowRegisterModal] = useState(false);
   const [showResetModal, setShowResetModal] = useState(false);
-  const [showClaimModal, setShowClaimModal] = useState(false);
 
   // Applicant Registration Form
   const [regForm, setRegForm] = useState({
@@ -59,30 +59,14 @@ export const LoginPortal: React.FC<LoginPortalProps> = ({
     newPassword: '',
   });
 
-  // First-run Owner Claim Form
-  const [claimForm, setClaimForm] = useState({
-    fullName: 'صاحب الـ Environment',
-    username: 'owner',
-    password: '',
-  });
-
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setSuccessMsg('');
     setLoading(true);
     try {
-      const res = await apiFetch<{
-        token: string;
-        user: SessionUser;
-        workspace: Workspace | null;
-      }>('/api/auth/login', {
-        method: 'POST',
-        body: JSON.stringify({ username, password }),
-      });
-      setSessionToken(res.token);
-      void trySignInAnonymously();
-      onAuthenticated(res.user, res.workspace);
+      const { user, workspace } = await loginWithCredentials(username, password);
+      onAuthenticated(user, workspace);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'تعذر تسجيل الدخول.');
     } finally {
@@ -95,45 +79,12 @@ export const LoginPortal: React.FC<LoginPortalProps> = ({
     setSuccessMsg('');
     setGoogleLoading(true);
     try {
-      const { idToken } = await signInOwnerWithGoogle();
-      const res = await apiFetch<{
-        token: string;
-        user: SessionUser;
-        workspace: Workspace | null;
-      }>('/api/auth/google-owner', {
-        method: 'POST',
-        body: JSON.stringify({ idToken }),
-      });
-      setSessionToken(res.token);
-      onAuthenticated(res.user, res.workspace);
+      const ownerUser = await loginWithGoogleOwner();
+      onAuthenticated(ownerUser, null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'تعذر تسجيل الدخول بحساب Google.');
     } finally {
       setGoogleLoading(false);
-    }
-  };
-
-  const handleClaimOwner = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
-    try {
-      const res = await apiFetch<{
-        token: string;
-        user: SessionUser;
-        workspace: Workspace | null;
-      }>('/api/auth/claim-owner', {
-        method: 'POST',
-        body: JSON.stringify(claimForm),
-      });
-      setSessionToken(res.token);
-      onOwnerClaimed();
-      setShowClaimModal(false);
-      onAuthenticated(res.user, res.workspace);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'تعذر تفعيل حساب الإدارة.');
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -142,18 +93,9 @@ export const LoginPortal: React.FC<LoginPortalProps> = ({
     setError('');
     setLoading(true);
     try {
-      const res = await apiFetch<{
-        token: string;
-        user: SessionUser;
-        workspace: Workspace | null;
-      }>('/api/auth/register-applicant', {
-        method: 'POST',
-        body: JSON.stringify(regForm),
-      });
-      setSessionToken(res.token);
-      void trySignInAnonymously();
+      const user = await registerApplicantInFirestore(regForm);
       setShowRegisterModal(false);
-      onAuthenticated(res.user, res.workspace);
+      onAuthenticated(user, null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'تعذر إرسال الطلب.');
     } finally {
@@ -166,10 +108,11 @@ export const LoginPortal: React.FC<LoginPortalProps> = ({
     setError('');
     setLoading(true);
     try {
-      await apiFetch('/api/auth/reset-password', {
-        method: 'POST',
-        body: JSON.stringify(resetForm),
-      });
+      await resetPasswordWithPhoneInFirestore(
+        resetForm.username,
+        resetForm.phone,
+        resetForm.newPassword
+      );
       setShowResetModal(false);
       setSuccessMsg('تم تحديث كلمة المرور بنجاح. يمكنك الآن تسجيل الدخول بكلمة المرور الجديدة.');
       setResetForm({ username: '', phone: '', newPassword: '' });
@@ -229,7 +172,7 @@ export const LoginPortal: React.FC<LoginPortalProps> = ({
           <section className="lg:col-span-7 flex flex-col justify-between bg-[#FFFDF9] border border-[#EAE0D5] rounded-3xl overflow-hidden">
             <div className="relative h-64 sm:h-80 w-full bg-[#2C1813]">
               <img
-                src="/src/assets/images/hero_church_sanctuary_1795619749074.jpg"
+                src={heroChurchImg}
                 alt="كنيسة قبطية مضيئة"
                 referrerPolicy="no-referrer"
                 className="w-full h-full object-cover"
@@ -394,20 +337,6 @@ export const LoginPortal: React.FC<LoginPortalProps> = ({
                 <Users className="w-4 h-4 text-[#7A1523]" />
                 {googleLoading ? 'جاري الاتصال بـ Google...' : 'الدخول بحساب Google المعتمد لصاحب المنصة'}
               </button>
-
-              {!ownerClaimed && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setError('');
-                    setShowClaimModal(true);
-                  }}
-                  className="w-full py-2 px-4 rounded-xl border border-dashed border-[#D4AF37] text-[#A46714] hover:bg-[#FBF2D8]/50 text-xs font-bold transition-colors flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  <KeyRound className="w-4 h-4" />
-                  تفعيل كلمة مرور صاحب الـ Environment (أول تشغيل)
-                </button>
-              )}
             </div>
           </section>
         </div>
@@ -628,73 +557,6 @@ export const LoginPortal: React.FC<LoginPortalProps> = ({
         </div>
       )}
 
-      {/* First-Run Owner Claim Modal */}
-      {showClaimModal && !ownerClaimed && (
-        <div className="fixed inset-0 z-50 bg-[#2C1813]/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-[#FFFDF9] border border-[#EAE0D5] rounded-3xl max-w-md w-full p-6 sm:p-8">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-extrabold text-[#2C1813]">تفعيل حساب صاحب الـ Environment</h3>
-              <button
-                type="button"
-                onClick={() => setShowClaimModal(false)}
-                className="p-2 rounded-xl hover:bg-[#FAF6EE] text-[#755953] cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <p className="text-xs text-[#755953] mb-4 leading-relaxed">
-              هذا الإعداد متاح لمرة واحدة فقط في التشغيل الأول لتعيين كلمة مرور خاصة بصاحب المنصة إلى جانب الدخول بحساب Google.
-            </p>
-            {error && (
-              <div className="mb-4 px-4 py-2.5 rounded-xl bg-[#FDF2F4] text-xs text-[#7A1523] font-semibold">
-                {error}
-              </div>
-            )}
-            <form onSubmit={handleClaimOwner} className="space-y-4">
-              <div>
-                <label className="block text-xs font-bold mb-1">الاسم الظاهر</label>
-                <input
-                  type="text"
-                  required
-                  value={claimForm.fullName}
-                  onChange={(e) => setClaimForm({ ...claimForm, fullName: e.target.value })}
-                  className="w-full bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3.5 py-2.5 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-bold mb-1">اسم المستخدم</label>
-                <input
-                  type="text"
-                  required
-                  dir="ltr"
-                  value={claimForm.username}
-                  onChange={(e) => setClaimForm({ ...claimForm, username: e.target.value })}
-                  className="w-full bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3.5 py-2.5 text-sm text-left font-mono"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-bold mb-1">كلمة المرور</label>
-                <input
-                  type="password"
-                  required
-                  minLength={6}
-                  dir="ltr"
-                  value={claimForm.password}
-                  onChange={(e) => setClaimForm({ ...claimForm, password: e.target.value })}
-                  className="w-full bg-[#FAF6EE] border border-[#EAE0D5] rounded-xl px-3.5 py-2.5 text-sm text-left"
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full py-2.5 rounded-xl bg-[#7A1523] hover:bg-[#620F1B] text-white text-sm font-bold cursor-pointer"
-              >
-                {loading ? 'جاري التفعيل...' : 'تفعيل ودخول لوحة التحكم'}
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

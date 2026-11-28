@@ -15,12 +15,10 @@ import {
 import type {
   Servant,
   SessionUser,
-  Workspace,
   WorkspaceBundle,
   WorkspaceStage,
 } from '../../types';
 import {
-  apiFetch,
   buildWhatsAppUrl,
   compressImageToDataUrl,
   DEFAULT_PLATFORM_EMBLEM,
@@ -29,7 +27,13 @@ import {
   getWorkspaceStages,
   resolveLogoUrl,
 } from '../../utils/api';
-import { syncWorkspaceBrandingToFirestore } from '../../firebase';
+import {
+  addServantInFirestore,
+  resetWorkspaceAccountPasswordInFirestore,
+  reviewChangeRequestInFirestore,
+  updateServantInFirestore,
+  updateWorkspaceSettingsInFirestore,
+} from '../../services/firestoreService';
 import { StageBuilder } from '../StageBuilder';
 import { UnifiedChatHub } from '../UnifiedChatHub';
 
@@ -113,10 +117,7 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
     e.preventDefault();
     setError('');
     try {
-      await apiFetch(`/api/workspaces/${workspace.id}/servants`, {
-        method: 'POST',
-        body: JSON.stringify(newServantForm),
-      });
+      await addServantInFirestore(workspace.id, newServantForm, workspace);
       setShowAddServant(false);
       setNewServantForm({
         fullName: '',
@@ -139,10 +140,7 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
     if (!editingServant) return;
     setError('');
     try {
-      await apiFetch(`/api/workspaces/${workspace.id}/servants/${editingServant.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify(editingServant),
-      });
+      await updateServantInFirestore(workspace.id, editingServant, currentUser, isAdmin);
       setEditingServant(null);
       setFeedback('تم تحديث بيانات الخادم وتسجيل التعديل في سجل التدقيق.');
       await onRefresh();
@@ -152,10 +150,10 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
   };
 
   const handleReviewChangeRequest = async (id: string, status: 'approved' | 'rejected') => {
-    await apiFetch(`/api/workspaces/${workspace.id}/change-requests/${id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status }),
-    });
+    const cr = changeRequests.find((c) => c.id === id);
+    if (!cr) return;
+    const stu = bundle.students.find((s) => s.id === cr.studentId);
+    await reviewChangeRequestInFirestore(workspace.id, cr, status, currentUser.fullName, stu);
     setFeedback(status === 'approved' ? 'تم اعتماد وتطبيق التعديل.' : 'تم رفض الطلب.');
     await onRefresh();
   };
@@ -163,10 +161,9 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
   const handleResetAccountPassword = async (accountId: string) => {
     setError('');
     try {
-      await apiFetch(`/api/workspaces/${workspace.id}/accounts/${accountId}/reset-password`, {
-        method: 'POST',
-        body: JSON.stringify({ tempPassword: tempPassInput }),
-      });
+      const account = accounts.find((a) => a.id === accountId);
+      if (!account) return;
+      await resetWorkspaceAccountPasswordInFirestore(workspace.id, account, tempPassInput);
       setResetTargetId('');
       setFeedback('تم تعيين كلمة المرور المؤقتة بنجاح. يمكنك إرسالها عبر واتساب الآن.');
       await onRefresh();
@@ -188,19 +185,15 @@ export const LeadershipAndSecurityTab: React.FC<LeadershipAndSecurityTabProps> =
       }
       const grades = validStages.map((s) => s.name);
       const stageConfig = grades.join('، ');
-      const res = await apiFetch<{ workspace: Workspace }>(`/api/workspaces/${workspace.id}/settings`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          churchName: brandingForm.churchName,
-          className: brandingForm.className,
-          stageConfig,
-          grades,
-          stages: validStages,
-          verse: brandingForm.verse,
-          logoUrl: brandingForm.logoUrl,
-        }),
+      await updateWorkspaceSettingsInFirestore(workspace.id, {
+        churchName: brandingForm.churchName,
+        className: brandingForm.className,
+        stageConfig,
+        grades,
+        stages: validStages,
+        verse: brandingForm.verse,
+        logoUrl: brandingForm.logoUrl,
       });
-      await syncWorkspaceBrandingToFirestore(res.workspace).catch(() => {});
       setFeedback('تم تحديث هوية وشعار ومراحل الفصل وحفظها سحابياً بنجاح.');
       await onRefresh();
     } catch (err) {

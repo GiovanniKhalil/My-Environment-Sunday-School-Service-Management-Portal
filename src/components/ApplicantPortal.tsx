@@ -1,21 +1,63 @@
-import React from 'react';
-import { Church, Clock, LogOut, MessageSquare, Sparkles } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { doc, onSnapshot } from 'firebase/firestore';
+import { CheckCircle2, Church, Clock, LogOut, MessageSquare, Sparkles } from 'lucide-react';
 import type { SessionUser } from '../types';
 import { DEFAULT_PLATFORM_EMBLEM } from '../utils/api';
+import { db } from '../firebase';
 import { UnifiedChatHub } from './UnifiedChatHub';
 
 interface ApplicantPortalProps {
   user: SessionUser;
+  onSessionActivated?: () => Promise<void>;
   onLogout: () => void;
 }
 
-export const ApplicantPortal: React.FC<ApplicantPortalProps> = ({ user, onLogout }) => {
-  const statusLabel =
-    user.status === 'approved'
-      ? 'تمت الموافقة وتفعيل المساحة'
-      : user.status === 'rejected'
-      ? 'معتذر عنه حالياً'
-      : 'قيد المراجعة والتنسيق مع صاحب الـ Environment';
+export const ApplicantPortal: React.FC<ApplicantPortalProps> = ({
+  user,
+  onSessionActivated,
+  onLogout,
+}) => {
+  const [liveStatus, setLiveStatus] = useState(user.status);
+  const [liveRole, setLiveRole] = useState(user.role);
+  const [liveWorkspaceId, setLiveWorkspaceId] = useState(user.workspaceId);
+  const [entering, setEntering] = useState(false);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      doc(db, 'globalUsers', user.id),
+      (snap) => {
+        if (!snap.exists()) return;
+        const data = snap.data() as Partial<SessionUser>;
+        if (data.status) setLiveStatus(data.status);
+        if (data.role) setLiveRole(data.role);
+        if (data.workspaceId !== undefined) setLiveWorkspaceId(data.workspaceId);
+      },
+      () => {
+        // ignore transient listener errors
+      }
+    );
+    return () => unsub();
+  }, [user.id]);
+
+  const isActivated = liveRole === 'head_servant' && Boolean(liveWorkspaceId);
+
+  const statusLabel = isActivated
+    ? 'تمت الموافقة وتفعيل المساحة!'
+    : liveStatus === 'approved'
+    ? 'تمت الموافقة وتفعيل المساحة'
+    : liveStatus === 'rejected'
+    ? 'معتذر عنه حالياً'
+    : 'قيد المراجعة والتنسيق مع صاحب الـ Environment';
+
+  const handleEnterActivatedWorkspace = async () => {
+    if (!onSessionActivated) return;
+    setEntering(true);
+    try {
+      await onSessionActivated();
+    } finally {
+      setEntering(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-[#FAF7F2] text-[#2C1813]">
@@ -48,6 +90,30 @@ export const ApplicantPortal: React.FC<ApplicantPortalProps> = ({ user, onLogout
       </header>
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-6">
+        {isActivated && (
+          <section className="bg-emerald-50 border border-emerald-200 rounded-3xl p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <CheckCircle2 className="w-6 h-6 text-emerald-700 shrink-0" />
+              <div>
+                <h2 className="font-extrabold text-sm sm:text-base text-emerald-900">
+                  تم اعتماد وتدشين مساحة فصلك بنجاح!
+                </h2>
+                <p className="text-xs text-emerald-800 mt-0.5">
+                  يمكنك الآن الدخول مباشرة إلى لوحة إدارة فصلك كأمين فصل.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleEnterActivatedWorkspace()}
+              disabled={entering}
+              className="px-5 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold cursor-pointer shrink-0"
+            >
+              {entering ? 'جاري الدخول...' : 'الدخول إلى مساحة الفصل الآن'}
+            </button>
+          </section>
+        )}
+
         <section className="bg-[#FFFDF9] border border-[#EAE0D5] rounded-3xl p-6 sm:p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
           <div className="space-y-2">
             <div className="flex items-center gap-2 text-xs font-bold text-[#A46714]">

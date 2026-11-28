@@ -6,7 +6,11 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import type { SessionUser, Workspace, WorkspaceBundle } from '../../types';
-import { apiFetch, resolveLogoUrl } from '../../utils/api';
+import { resolveLogoUrl } from '../../utils/api';
+import {
+  changeOwnPasswordInFirestore,
+  subscribeWorkspaceBundle,
+} from '../../services/firestoreService';
 import { StudentPortal } from './StudentPortal';
 import { ServantDashboard } from './ServantDashboard';
 import { MakhdoumeenTab } from './MakhdoumeenTab';
@@ -42,21 +46,27 @@ export const WorkspaceShell: React.FC<WorkspaceShellProps> = ({
   const [changingPass, setChangingPass] = useState(false);
   const [passError, setPassError] = useState('');
 
-  const loadBundle = useCallback(async () => {
-    try {
-      setLoading(true);
-      const data = await apiFetch<WorkspaceBundle>(`/api/workspaces/${workspace.id}/bundle`);
-      setBundle(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'تعذر تحميل بيانات الفصل.');
-    } finally {
-      setLoading(false);
-    }
-  }, [workspace.id]);
+  const [retryKey, setRetryKey] = useState(0);
+
+  const noopRefresh = useCallback(async () => {}, []);
 
   useEffect(() => {
-    void loadBundle();
-  }, [loadBundle]);
+    setLoading(true);
+    setError('');
+    const unsub = subscribeWorkspaceBundle(
+      workspace.id,
+      currentUser,
+      (data) => {
+        setBundle(data);
+        setLoading(false);
+      },
+      (msg) => {
+        setError(msg);
+        setLoading(false);
+      }
+    );
+    return () => unsub();
+  }, [workspace.id, currentUser, retryKey]);
 
   const handleForcedPasswordChange = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -71,11 +81,8 @@ export const WorkspaceShell: React.FC<WorkspaceShellProps> = ({
     }
     setChangingPass(true);
     try {
-      const res = await apiFetch<{ user: SessionUser }>('/api/auth/change-password', {
-        method: 'POST',
-        body: JSON.stringify({ newPassword }),
-      });
-      onUserUpdated(res.user);
+      const updatedUser = await changeOwnPasswordInFirestore(currentUser, newPassword);
+      onUserUpdated(updatedUser);
       setNewPassword('');
       setConfirmPassword('');
     } catch (err) {
@@ -189,7 +196,7 @@ export const WorkspaceShell: React.FC<WorkspaceShellProps> = ({
             <p className="text-sm font-bold text-[#7A1523]">{error}</p>
             <button
               type="button"
-              onClick={() => void loadBundle()}
+              onClick={() => setRetryKey((k) => k + 1)}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#7A1523] text-white text-xs font-bold cursor-pointer"
             >
               <RefreshCw className="w-4 h-4" />
@@ -198,27 +205,27 @@ export const WorkspaceShell: React.FC<WorkspaceShellProps> = ({
           </div>
         ) : bundle ? (
           isStudent ? (
-            <StudentPortal bundle={bundle} currentUser={currentUser} onRefresh={loadBundle} />
+            <StudentPortal bundle={bundle} currentUser={currentUser} onRefresh={noopRefresh} />
           ) : (
             <>
               {activeTab === 'home' && (
-                <ServantDashboard bundle={bundle} currentUser={currentUser} onRefresh={loadBundle} />
+                <ServantDashboard bundle={bundle} currentUser={currentUser} onRefresh={noopRefresh} />
               )}
               {activeTab === 'students' && (
-                <MakhdoumeenTab bundle={bundle} currentUser={currentUser} onRefresh={loadBundle} />
+                <MakhdoumeenTab bundle={bundle} currentUser={currentUser} onRefresh={noopRefresh} />
               )}
               {activeTab === 'schedules' && (
                 <SchedulesAndVisitationTab
                   bundle={bundle}
                   currentUser={currentUser}
-                  onRefresh={loadBundle}
+                  onRefresh={noopRefresh}
                 />
               )}
               {activeTab === 'leadership' && (
                 <LeadershipAndSecurityTab
                   bundle={bundle}
                   currentUser={currentUser}
-                  onRefresh={loadBundle}
+                  onRefresh={noopRefresh}
                 />
               )}
               {activeTab === 'chat' && (

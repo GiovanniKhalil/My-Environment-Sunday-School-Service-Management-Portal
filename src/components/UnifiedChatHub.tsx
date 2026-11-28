@@ -26,12 +26,15 @@ import type {
   HeadServantSummary,
   SessionUser,
 } from '../types';
+import { formatArabicTime } from '../utils/api';
 import {
-  apiFetch,
-  formatArabicTime,
-  getSessionToken,
-} from '../utils/api';
-import { getCurrentOwnerFirebaseIdToken } from '../firebase';
+  createCustomGroupInFirestore,
+  deleteCustomGroupInFirestore,
+  sendChatMessageInFirestore,
+  subscribeChannelMessages,
+  subscribeChatChannels,
+  updateCustomGroupInFirestore,
+} from '../services/firestoreService';
 
 interface UnifiedChatHubProps {
   currentUser: SessionUser;
@@ -169,79 +172,62 @@ export const UnifiedChatHub: React.FC<UnifiedChatHubProps> = ({
     return [];
   }, [isOwner, currentUser.role, workspaceId]);
 
-  const loadChannels = useCallback(async () => {
-    try {
-      setLoadingChannels(true);
-      setError('');
-      const query = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : '';
-      const res = await apiFetch<{
-        channels: EnvironmentChatChannel[];
-        headServants?: HeadServantSummary[];
-      }>(`/api/chat/channels${query}`);
-      const filtered = res.channels.filter(canViewChannelClient);
-      setChannels(filtered);
-      if (Array.isArray(res.headServants)) {
-        setHeadServants(res.headServants);
-      }
-
-      if (initialChannelId) {
-        const target = filtered.find((c) => c.id === initialChannelId);
-        if (target) {
-          setActiveCategory(target.type);
-          setActiveChannelId(target.id);
-          return;
-        }
-      }
-
-      if (filtered.length > 0) {
-        const currentSelected = filtered.find((c) => c.id === activeChannelIdRef.current);
-        if (currentSelected) {
-          setActiveCategory(currentSelected.type);
-          return;
-        }
-        const preferredCategory =
-          workspaceId && filtered.some((c) => c.type === 'workspace_internal' && c.workspaceId === workspaceId)
-            ? 'workspace_internal'
-            : availableCategories.find((cat) => filtered.some((c) => c.type === cat)) ||
-              filtered[0].type;
-        setActiveCategory(preferredCategory);
-        const preferredChannel =
-          filtered.find(
-            (c) =>
-              c.type === preferredCategory &&
-              (!workspaceId || c.workspaceId === workspaceId)
-          ) ||
-          filtered.find((c) => c.type === preferredCategory) ||
-          filtered[0];
-        setActiveChannelId(preferredChannel.id);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'تعذر تحميل قنوات التواصل.');
-    } finally {
-      setLoadingChannels(false);
-    }
-  }, [workspaceId, initialChannelId, availableCategories, canViewChannelClient]);
-
-  const loadMessages = useCallback(async (channelId: string) => {
-    if (!channelId) return;
-    try {
-      setLoadingMessages(true);
-      setError('');
-      const res = await apiFetch<{
-        channel: EnvironmentChatChannel;
-        messages: EnvironmentChatMessage[];
-      }>(`/api/chat/channels/${encodeURIComponent(channelId)}/messages`);
-      setMessages(res.messages);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'تعذر تحميل الرسائل.');
-    } finally {
-      setLoadingMessages(false);
-    }
-  }, []);
-
   useEffect(() => {
-    void loadChannels();
-  }, [loadChannels]);
+    setLoadingChannels(true);
+    setError('');
+    const unsub = subscribeChatChannels(
+      currentUser,
+      workspaceId,
+      (rawChannels) => {
+        const filtered = rawChannels.filter(canViewChannelClient);
+        setChannels(filtered);
+        setLoadingChannels(false);
+
+        if (initialChannelId) {
+          const target = filtered.find((c) => c.id === initialChannelId);
+          if (target && !activeChannelIdRef.current) {
+            setActiveCategory(target.type);
+            setActiveChannelId(target.id);
+            return;
+          }
+        }
+
+        if (filtered.length > 0) {
+          const currentSelected = filtered.find((c) => c.id === activeChannelIdRef.current);
+          if (currentSelected) {
+            return;
+          }
+          const preferredCategory =
+            workspaceId &&
+            filtered.some((c) => c.type === 'workspace_internal' && c.workspaceId === workspaceId)
+              ? 'workspace_internal'
+              : availableCategories.find((cat) => filtered.some((c) => c.type === cat)) ||
+                filtered[0].type;
+          setActiveCategory(preferredCategory);
+          const preferredChannel =
+            filtered.find(
+              (c) =>
+                c.type === preferredCategory &&
+                (!workspaceId || c.workspaceId === workspaceId)
+            ) ||
+            filtered.find((c) => c.type === preferredCategory) ||
+            filtered[0];
+          setActiveChannelId(preferredChannel.id);
+        } else {
+          setActiveChannelId('');
+        }
+      },
+      (summaries) => {
+        setHeadServants(summaries);
+      },
+      (err) => {
+        setError(err instanceof Error ? err.message : 'تعذر تحميل قنوات التواصل.');
+        setLoadingChannels(false);
+      }
+    );
+
+    return () => unsub();
+  }, [currentUser, workspaceId, initialChannelId, availableCategories, canViewChannelClient]);
 
   useEffect(() => {
     if (initialChannelId) {
@@ -254,84 +240,30 @@ export const UnifiedChatHub: React.FC<UnifiedChatHubProps> = ({
   }, [initialChannelId, visibleChannels]);
 
   useEffect(() => {
-    if (activeChannelId) {
-      void loadMessages(activeChannelId);
-    } else {
+    if (!activeChannelId) {
       setMessages([]);
+      setLoadingMessages(false);
+      return;
     }
-  }, [activeChannelId, loadMessages]);
+    setLoadingMessages(true);
+    setError('');
+    const unsub = subscribeChannelMessages(
+      activeChannelId,
+      (msgs) => {
+        setMessages(msgs);
+        setLoadingMessages(false);
+      },
+      (err) => {
+        setError(err instanceof Error ? err.message : 'تعذر تحميل الرسائل.');
+        setLoadingMessages(false);
+      }
+    );
+    return () => unsub();
+  }, [activeChannelId]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length]);
-
-  useEffect(() => {
-    let closed = false;
-    let es: EventSource | null = null;
-
-    const connectSse = async () => {
-      const token = getSessionToken();
-      const idToken = await getCurrentOwnerFirebaseIdToken();
-      if (closed || (!token && !idToken)) return;
-
-      const params = new URLSearchParams();
-      if (token) params.set('token', token);
-      if (idToken) params.set('idToken', idToken);
-
-      es = new EventSource(`/api/chat/stream?${params.toString()}`);
-      es.onmessage = (ev) => {
-        try {
-          const parsed = JSON.parse(ev.data) as {
-            type?: string;
-            channel?: EnvironmentChatChannel;
-            message?: EnvironmentChatMessage;
-            channelId?: string;
-          };
-          if (parsed.type === 'chat:message' && parsed.message && parsed.channel) {
-            const incomingCh = parsed.channel;
-            if (!canViewChannelClient(incomingCh)) return;
-            setChannels((prev) => {
-              const exists = prev.some((c) => c.id === incomingCh.id);
-              if (!exists) return [incomingCh, ...prev];
-              return prev.map((c) => (c.id === incomingCh.id ? incomingCh : c));
-            });
-            setMessages((prev) => {
-              if (parsed.message!.channelId !== activeChannelIdRef.current) return prev;
-              if (prev.some((m) => m.id === parsed.message!.id)) return prev;
-              return [...prev, parsed.message!];
-            });
-          } else if (parsed.type === 'chat:channel_updated' && parsed.channel) {
-            const updatedCh = parsed.channel;
-            setChannels((prev) => {
-              if (!canViewChannelClient(updatedCh)) {
-                return prev.filter((c) => c.id !== updatedCh.id);
-              }
-              const exists = prev.some((c) => c.id === updatedCh.id);
-              if (!exists) return [updatedCh, ...prev];
-              return prev.map((c) => (c.id === updatedCh.id ? updatedCh : c));
-            });
-          } else if (parsed.type === 'chat:channel_removed' && parsed.channelId) {
-            const removedId = parsed.channelId;
-            setChannels((prev) => {
-              const next = prev.filter((c) => c.id !== removedId);
-              if (activeChannelIdRef.current === removedId) {
-                setActiveChannelId(next[0]?.id || '');
-              }
-              return next;
-            });
-          }
-        } catch {
-          // ignore malformed keepalive
-        }
-      };
-    };
-
-    void connectSse();
-    return () => {
-      closed = true;
-      es?.close();
-    };
-  }, [currentUser.id, canViewChannelClient]);
 
   const categoryChannels = useMemo(() => {
     const list = visibleChannels.filter((c) => c.type === activeCategory);
@@ -372,19 +304,16 @@ export const UnifiedChatHub: React.FC<UnifiedChatHubProps> = ({
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
     const text = draft.trim();
-    if (!text || !activeChannelId || sending || isReadOnlyForCurrentUser) return;
+    if (!text || !activeChannel || sending || isReadOnlyForCurrentUser) return;
     setSending(true);
     setError('');
     try {
-      const res = await apiFetch<{
-        message: EnvironmentChatMessage;
-        channel: EnvironmentChatChannel;
-      }>(`/api/chat/channels/${encodeURIComponent(activeChannelId)}/messages`, {
-        method: 'POST',
-        body: JSON.stringify({ text }),
-      });
-      setMessages((prev) => (prev.some((m) => m.id === res.message.id) ? prev : [...prev, res.message]));
-      setChannels((prev) => prev.map((c) => (c.id === res.channel.id ? res.channel : c)));
+      const ownWsName =
+        channels.find((c) => c.workspaceId && c.workspaceId === (workspaceId || currentUser.workspaceId))
+          ?.className ||
+        currentUser.proposedClassName ||
+        '';
+      await sendChatMessageInFirestore(activeChannel, text, currentUser, ownWsName);
       setDraft('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'تعذر إرسال الرسالة.');
@@ -425,13 +354,14 @@ export const UnifiedChatHub: React.FC<UnifiedChatHubProps> = ({
     setCreatingGroup(true);
     setGroupModalError('');
     try {
-      const res = await apiFetch<{ channel: EnvironmentChatChannel }>('/api/chat/groups', {
-        method: 'POST',
-        body: JSON.stringify({ title: cleanTitle, memberIds: newGroupMemberIds }),
-      });
-      setChannels((prev) => [res.channel, ...prev.filter((c) => c.id !== res.channel.id)]);
+      const created = await createCustomGroupInFirestore(
+        cleanTitle,
+        newGroupMemberIds,
+        headServants,
+        currentUser
+      );
       setActiveCategory('group');
-      setActiveChannelId(res.channel.id);
+      setActiveChannelId(created.id);
       setShowCreateGroup(false);
       setNewGroupTitle('');
       setNewGroupMemberIds([]);
@@ -464,14 +394,7 @@ export const UnifiedChatHub: React.FC<UnifiedChatHubProps> = ({
     setSavingRename(true);
     setManageError('');
     try {
-      const res = await apiFetch<{ channel: EnvironmentChatChannel }>(
-        `/api/chat/groups/${encodeURIComponent(activeChannel.id)}`,
-        {
-          method: 'PATCH',
-          body: JSON.stringify({ title: cleanTitle }),
-        }
-      );
-      setChannels((prev) => prev.map((c) => (c.id === res.channel.id ? res.channel : c)));
+      await updateCustomGroupInFirestore(activeChannel, { title: cleanTitle }, headServants);
     } catch (err) {
       setManageError(err instanceof Error ? err.message : 'تعذر تحديث اسم المجموعة.');
     } finally {
@@ -484,15 +407,12 @@ export const UnifiedChatHub: React.FC<UnifiedChatHubProps> = ({
     setUpdatingMembers(true);
     setManageError('');
     try {
-      const res = await apiFetch<{ channel: EnvironmentChatChannel }>(
-        `/api/chat/groups/${encodeURIComponent(activeChannel.id)}`,
-        {
-          method: 'PATCH',
-          body: JSON.stringify({ memberIds: nextMemberIds }),
-        }
+      const updated = await updateCustomGroupInFirestore(
+        activeChannel,
+        { memberIds: nextMemberIds },
+        headServants
       );
-      setChannels((prev) => prev.map((c) => (c.id === res.channel.id ? res.channel : c)));
-      const updatedSet = new Set(res.channel.memberIds || []);
+      const updatedSet = new Set(updated.memberIds || []);
       const nextAvailable = headServants.find((hs) => !updatedSet.has(hs.id));
       setAddMemberId(nextAvailable?.id || '');
     } catch (err) {
@@ -520,15 +440,10 @@ export const UnifiedChatHub: React.FC<UnifiedChatHubProps> = ({
     setDeletingGroup(true);
     setManageError('');
     try {
-      await apiFetch<{ ok: boolean; deletedId: string }>(
-        `/api/chat/groups/${encodeURIComponent(activeChannel.id)}`,
-        { method: 'DELETE' }
-      );
       const deletedId = activeChannel.id;
+      await deleteCustomGroupInFirestore(activeChannel, headServants);
       const remaining = visibleChannels.filter((c) => c.id !== deletedId);
-      setChannels((prev) => prev.filter((c) => c.id !== deletedId));
-      const fallback =
-        remaining.find((c) => c.type === 'group') || remaining[0] || null;
+      const fallback = remaining.find((c) => c.type === 'group') || remaining[0] || null;
       setActiveChannelId(fallback?.id || '');
       setShowManageGroup(false);
       setConfirmDeleteGroup(false);

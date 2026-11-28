@@ -15,7 +15,8 @@ import type {
   SessionUser,
   WorkspaceBundle,
 } from '../../types';
-import { apiFetch, buildWhatsAppUrl, formatArabicDate, resolveLogoUrl } from '../../utils/api';
+import { buildWhatsAppUrl, formatArabicDate, resolveLogoUrl } from '../../utils/api';
+import { submitChangeRequestInFirestore } from '../../services/firestoreService';
 
 interface StudentPortalProps {
   bundle: WorkspaceBundle;
@@ -77,16 +78,17 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
         'العنوان': student.address,
         'تاريخ الميلاد': student.birthDate,
       };
-      await apiFetch(`/api/workspaces/${workspace.id}/change-requests`, {
-        method: 'POST',
-        body: JSON.stringify({
-          studentId: student.id,
+      await submitChangeRequestInFirestore(
+        workspace.id,
+        student,
+        {
           field: reqField,
           oldValue: oldMap[reqField] || '',
           newValue: reqValue.trim(),
           reason: reqReason.trim(),
-        }),
-      });
+        },
+        currentUser.username
+      );
       setReqValue('');
       setReqReason('');
       setNotice('تم إرسال طلب التعديل إلى أمين الفصل للمراجعة والاعتماد.');

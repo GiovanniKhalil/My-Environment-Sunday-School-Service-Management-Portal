@@ -19,6 +19,7 @@
         "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
         "studentCount": { "type": "number" },
         "servantCount": { "type": "number" },
+        "customGroupIds": { "type": "array" },
         "createdAt": { "type": "string", "format": "date-time", "maxLength": 64 },
         "updatedAt": { "type": "string", "format": "date-time", "maxLength": 64 }
       },
@@ -33,9 +34,54 @@
         "workspaceId": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "role": { "type": "string", "enum": ["head_servant", "assistant_head", "servant", "student"] },
         "linkedProfileId": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "loginKey": { "type": "string", "maxLength": 256 },
+        "claimProof": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "string", "maxLength": 64 }
       },
       "required": ["uid", "workspaceId", "role", "createdAt"]
+    },
+    "LoginDirectoryEntry": {
+      "title": "LoginDirectoryEntry",
+      "description": "Case-sensitive credential lookup keyed by encoded username for multi-device anonymous auth claim verification.",
+      "type": "object",
+      "properties": {
+        "loginKey": { "type": "string", "minLength": 2, "maxLength": 256, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "username": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "role": { "type": "string", "enum": ["applicant", "head_servant", "assistant_head", "servant", "student"] },
+        "workspaceId": { "type": "string", "maxLength": 128 },
+        "fullName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "status": { "type": "string", "enum": ["active", "pending", "approved", "rejected", "suspended"] },
+        "mustChangePassword": { "type": "boolean" },
+        "linkedProfileId": { "type": "string", "maxLength": 128 },
+        "salt": { "type": "string", "minLength": 16, "maxLength": 64 },
+        "passwordHash": { "type": "string", "minLength": 64, "maxLength": 128 },
+        "claimVerifier": { "type": "string", "minLength": 64, "maxLength": 128 },
+        "phoneProofVerifier": { "type": "string", "maxLength": 128 },
+        "lastResetProof": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["loginKey", "userId", "username", "role", "fullName", "status", "salt", "passwordHash", "claimVerifier", "createdAt"]
+    },
+    "ActiveSession": {
+      "title": "ActiveSession",
+      "description": "Maps current device Firebase UID to verified globalUser identity across page reloads.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "loginKey": { "type": "string", "minLength": 2, "maxLength": 256 },
+        "role": { "type": "string", "enum": ["applicant", "head_servant", "assistant_head", "servant", "student"] },
+        "workspaceId": { "type": "string", "maxLength": 128 },
+        "fullName": { "type": "string", "maxLength": 120 },
+        "linkedProfileId": { "type": "string", "maxLength": 128 },
+        "claimProof": { "type": "string", "minLength": 64, "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["uid", "userId", "loginKey", "role", "claimProof", "createdAt"]
     },
     "GlobalUser": {
       "title": "GlobalUser",
@@ -49,7 +95,9 @@
         "fullName": { "type": "string", "minLength": 2, "maxLength": 120 },
         "status": { "type": "string", "enum": ["active", "pending", "approved", "rejected", "suspended"] },
         "ownerUid": { "type": "string", "maxLength": 128 },
-        "createdAt": { "type": "string", "maxLength": 64 }
+        "approvedWorkspaceId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
       },
       "required": ["id", "username", "role", "fullName", "status", "createdAt"]
     },
@@ -65,10 +113,31 @@
         "salt": { "type": "string", "maxLength": 64 },
         "proposedChurchName": { "type": "string", "maxLength": 120 },
         "proposedClassName": { "type": "string", "maxLength": 120 },
+        "proposedStageConfig": { "type": "string", "maxLength": 200 },
         "serviceVision": { "type": "string", "maxLength": 1500 },
-        "mustChangePassword": { "type": "boolean" }
+        "mustChangePassword": { "type": "boolean" },
+        "linkedProfileId": { "type": "string", "maxLength": 128 }
       },
       "required": ["userId"]
+    },
+    "WorkspaceAccount": {
+      "title": "WorkspaceAccount",
+      "description": "Workspace-scoped account summary for leadership security management.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "username": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "role": { "type": "string", "enum": ["head_servant", "assistant_head", "servant", "student"] },
+        "fullName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "linkedProfileId": { "type": "string", "maxLength": 128 },
+        "mustChangePassword": { "type": "boolean" },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "workspaceId", "username", "role", "fullName", "linkedProfileId", "mustChangePassword", "isActive", "createdAt"]
     },
     "EnvironmentChatChannel": {
       "title": "EnvironmentChatChannel",
@@ -85,9 +154,12 @@
         "createdBy": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "string", "maxLength": 64 },
         "participantUid": { "type": "string", "maxLength": 128 },
+        "participantUserId": { "type": "string", "maxLength": 128 },
         "participantName": { "type": "string", "maxLength": 120 },
         "participantRole": { "type": "string", "maxLength": 40 },
         "workspaceId": { "type": "string", "maxLength": 128 },
+        "churchName": { "type": "string", "maxLength": 120 },
+        "className": { "type": "string", "maxLength": 120 },
         "lastMessage": { "type": "string", "maxLength": 500 },
         "lastMessageAt": { "type": "string", "maxLength": 64 }
       },
@@ -101,10 +173,13 @@
         "id": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "channelId": { "type": "string", "minLength": 2, "maxLength": 128 },
         "senderUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "senderId": { "type": "string", "maxLength": 128 },
         "senderName": { "type": "string", "minLength": 1, "maxLength": 120 },
         "senderRole": { "type": "string", "maxLength": 40 },
+        "senderWorkspaceName": { "type": "string", "maxLength": 140 },
         "text": { "type": "string", "minLength": 1, "maxLength": 2000 },
-        "createdAt": { "type": "string", "maxLength": 64 }
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "isSystem": { "type": "boolean" }
       },
       "required": ["id", "channelId", "senderUid", "senderName", "text", "createdAt"]
     },
@@ -218,6 +293,14 @@
     }
   },
   "firestore": {
+    "/loginDirectory/{loginKey}": {
+      "schema": { "$ref": "#/entities/LoginDirectoryEntry" },
+      "description": "Case-sensitive credential lookup for anonymous multi-device authentication."
+    },
+    "/activeSessions/{uid}": {
+      "schema": { "$ref": "#/entities/ActiveSession" },
+      "description": "Current device Firebase UID to user identity mapping verified by claimProof."
+    },
     "/workspaces/{workspaceId}": {
       "schema": { "$ref": "#/entities/Workspace" },
       "description": "Root workspace metadata documents."
@@ -225,6 +308,10 @@
     "/workspaces/{workspaceId}/members/{uid}": {
       "schema": { "$ref": "#/entities/WorkspaceMember" },
       "description": "Workspace membership and role binding."
+    },
+    "/workspaces/{workspaceId}/accounts/{accountId}": {
+      "schema": { "$ref": "#/entities/WorkspaceAccount" },
+      "description": "Workspace-scoped user account directory for leadership administration."
     },
     "/workspaces/{workspaceId}/students/{studentId}": {
       "schema": { "$ref": "#/entities/Student" },
