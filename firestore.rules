@@ -507,7 +507,8 @@ service cloud.firestore {
 
     // --- System Config & Owner Credentials ---
     match /system_config/{configId} {
-      allow read, write: if isEnvironmentOwner();
+      allow get: if isEnvironmentOwner() || (isSignedIn() && configId == 'owner_credentials');
+      allow list, write: if isEnvironmentOwner();
     }
 
     // --- Test Connection Health Check ---
